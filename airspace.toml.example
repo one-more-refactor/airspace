@@ -1,0 +1,36 @@
+# airspace — copy to ~/.config/airspace/config.toml
+#
+# Only the node position actually matters. Everything else has a default that
+# produces a sensible first picture.
+
+[room]
+# Metres. Used to draw the picture and to bound the position search. It does
+# not have to be a room — make it the floor, or the building, and put the ears
+# where they really are.
+width = 10.0
+height = 8.0
+
+# ── This ear ─────────────────────────────────────────────────────────────────
+[node]
+# Whatever you want to see on the map. Defaults to the hostname.
+name = "carl"
+# Metres from the top-left corner of the room above. Guessing this to the
+# nearest metre is fine; the distance estimates are far less precise than your
+# guess. Getting it badly wrong is what makes three nodes disagree.
+x = 5.0
+y = 4.0
+
+# ── Talking to a collector ───────────────────────────────────────────────────
+# One ear hears a distance. Three ears at known positions hear a place — that is
+# the only honest way to get direction out of this, so it is worth the second
+# and third machine.
+[collector]
+# Where `airspace feed` sends its observations. Empty on the collector itself.
+url = ""
+# Shared secret, same on every node. Generate one with:
+#   head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n'
+#
+# The ingest endpoint refuses to accept anything without this. An open one lets
+# anyone on the network draw imaginary people into your room, which is a worse
+# failure than not having the feature.
+token = ""

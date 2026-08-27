@@ -1,0 +1,199 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>airspace</title>
+<style>
+:root{--bg:#fbfaf8;--fg:#16150f;--dim:#6a675c;--line:#e2ded2;--card:#fff;--pub:#b4552b;--rot:#5f7d8c;--sel:#1c7a5e}
+@media (prefers-color-scheme:dark){:root{--bg:#0e0d0b;--fg:#eceae2;--dim:#8f8b7e;--line:#26241f;--card:#161512;--pub:#e08a5a;--rot:#7fa8bd;--sel:#4fc79a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 ui-sans-serif,system-ui,sans-serif}
+header{padding:22px 24px 14px;border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:1.05rem;letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+.sub{color:var(--dim);font-size:.85rem;margin-top:4px}
+.warn{margin:14px 24px 0;padding:10px 14px;border:1px solid var(--line);border-left:3px solid var(--pub);border-radius:4px;color:var(--dim);font-size:.85rem;max-width:70ch}
+.wrap{display:grid;grid-template-columns:minmax(320px,1fr) minmax(300px,420px);gap:24px;padding:20px 24px 60px;align-items:start}
+@media (max-width:860px){.wrap{grid-template-columns:1fr}}
+canvas{width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:var(--card);display:block}
+.cap{color:var(--dim);font-size:.78rem;margin-top:8px}
+ul.dev{list-style:none;margin:0;padding:0;max-height:74vh;overflow:auto}
+li.d{border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:8px;background:var(--card);cursor:pointer}
+li.d.on{border-color:var(--sel);box-shadow:0 0 0 1px var(--sel) inset}
+.nm{font-weight:600;font-size:.92rem;display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.m{font-family:ui-monospace,monospace;font-size:.78rem;color:var(--dim);white-space:nowrap}
+.addr{font-family:ui-monospace,monospace;font-size:.72rem;color:var(--dim)}
+.tag{display:inline-block;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;border:1px solid var(--line);border-radius:99px;padding:0 6px;color:var(--dim)}
+.tag.perm{color:var(--bg);background:var(--pub);border-color:var(--pub)}
+.doing{margin:6px 0 0;padding-left:1.05em;font-size:.82rem;color:var(--dim)}
+.doing li{margin:2px 0}
+.empty{color:var(--dim);padding:20px 0}
+</style>
+<header>
+  <h1>airspace</h1>
+  <div class="sub" id="sub">listening…</div>
+</header>
+<div class="warn" id="warn"></div>
+<div class="wrap">
+  <div>
+    <canvas id="c" width="900" height="740"></canvas>
+    <div class="cap" id="cap"></div>
+  </div>
+  <ul class="dev" id="list"><li class="empty">nothing heard yet</li></ul>
+</div>
+<script>
+const c = document.getElementById('c'), g = c.getContext('2d');
+let snap = null, sel = null;
+
+const css = k => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
+
+// Metres -> canvas pixels, with a margin so nodes on a wall are still visible.
+function fit(room){
+  const pad = 46;
+  const s = Math.min((c.width - 2*pad) / room.width, (c.height - 2*pad) / room.height);
+  return {s, ox: (c.width - room.width*s)/2, oy: (c.height - room.height*s)/2};
+}
+
+// How wrong a distance estimate is, in metres, at that distance. RSSI error is
+// roughly constant in dB, and dB error becomes metre error proportionally —
+// so a reading at 20 m is not "20 m", it is "somewhere past 10".
+const sigma = d => Math.max(0.8, 0.55 * d);
+
+function draw(){
+  g.clearRect(0,0,c.width,c.height);
+  if(!snap) return;
+  const room = snap.room, f = fit(room);
+  const px = (x,y) => [f.ox + x*f.s, f.oy + y*f.s];
+
+  // room + metre grid
+  g.strokeStyle = css('--line'); g.lineWidth = 1;
+  g.strokeRect(f.ox, f.oy, room.width*f.s, room.height*f.s);
+  g.globalAlpha = .45;
+  for(let x=1;x<room.width;x++){ g.beginPath(); const [a,b]=px(x,0),[d,e]=px(x,room.height); g.moveTo(a,b); g.lineTo(d,e); g.stroke(); }
+  for(let y=1;y<room.height;y++){ g.beginPath(); const [a,b]=px(0,y),[d,e]=px(room.width,y); g.moveTo(a,b); g.lineTo(d,e); g.stroke(); }
+  g.globalAlpha = 1;
+
+  // the likelihood field of the selected device — the honest picture
+  const d = snap.devices.find(x => x.id === sel);
+  if(d) field(d, f);
+
+  // every device as a thin ring per listening node: radius is the estimated
+  // distance, and the ring is exactly the claim being made — somewhere on here.
+  for(const dev of snap.devices){
+    const on = dev.id === sel;
+    g.strokeStyle = on ? css('--sel') : (dev.at === 'public' ? css('--pub') : css('--rot'));
+    g.globalAlpha = on ? .9 : .22;
+    g.lineWidth = on ? 2 : 1;
+    for(const h of dev.heard){
+      const n = snap.nodes.find(n => n.name === h.node); if(!n) continue;
+      const [cx,cy] = px(n.x, n.y);
+      g.beginPath(); g.arc(cx, cy, h.metres*f.s, 0, Math.PI*2); g.stroke();
+    }
+    g.globalAlpha = 1;
+  }
+
+  // nodes last, on top
+  for(const n of snap.nodes){
+    const [x,y] = px(n.x, n.y);
+    g.fillStyle = css('--fg');
+    g.beginPath(); g.arc(x, y, 5, 0, Math.PI*2); g.fill();
+    g.font = '12px ui-monospace,monospace'; g.textAlign = 'center';
+    g.fillText(n.name, x, y - 11);
+  }
+}
+
+// Grid-search the room: for every cell, how badly does that position disagree
+// with what each node heard? Draw the disagreement as transparency. One node
+// gives a ring, two give two blobs, three collapse to a point — the shape IS
+// the uncertainty, which is why this is drawn instead of a dot.
+function field(dev, f){
+  const room = snap.room, step = 6;
+  const W = Math.floor(room.width*f.s/step), H = Math.floor(room.height*f.s/step);
+  const img = g.createImageData(W*step, H*step);
+  const col = hexToRgb(css('--sel'));
+  let best = null;
+
+  for(let gy=0; gy<H; gy++){
+    for(let gx=0; gx<W; gx++){
+      const mx = (gx+0.5)*step/f.s, my = (gy+0.5)*step/f.s;
+      let r = 0;
+      for(const h of dev.heard){
+        const n = snap.nodes.find(n => n.name === h.node); if(!n) continue;
+        const dist = Math.hypot(mx-n.x, my-n.y);
+        const e = (dist - h.metres) / sigma(h.metres);
+        r += e*e;
+      }
+      const like = Math.exp(-0.5*r);
+      if(!best || like > best.l) best = {l:like, x:mx, y:my};
+      const a = Math.min(190, like*210)|0;
+      if(a > 3){
+        for(let dy=0; dy<step; dy++) for(let dx=0; dx<step; dx++){
+          const i = (((gy*step+dy)*W*step) + gx*step+dx)*4;
+          img.data[i]=col[0]; img.data[i+1]=col[1]; img.data[i+2]=col[2]; img.data[i+3]=a;
+        }
+      }
+    }
+  }
+  g.putImageData(img, f.ox, f.oy);
+
+  // A single best point is only worth drawing when three nodes agree on it.
+  if(best && snap.can_locate){
+    const x = f.ox + best.x*f.s, y = f.oy + best.y*f.s;
+    g.strokeStyle = css('--sel'); g.lineWidth = 2;
+    g.beginPath(); g.moveTo(x-8,y); g.lineTo(x+8,y); g.moveTo(x,y-8); g.lineTo(x,y+8); g.stroke();
+  }
+}
+
+function hexToRgb(h){
+  h = h.replace('#','');
+  if(h.length===3) h = h.split('').map(x=>x+x).join('');
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+}
+
+function render(){
+  const n = snap.devices.length, perm = snap.devices.filter(d=>d.at==='public').length;
+  document.getElementById('sub').textContent =
+    `${n} device${n===1?'':'s'} audible right now · ${snap.nodes.length} listening node${snap.nodes.length===1?'':'s'} · ${perm} with a permanent address`;
+
+  document.getElementById('warn').textContent = snap.can_locate
+    ? 'Three or more nodes are listening, so a position can be estimated. The cross is the best fit; the cloud around it is everywhere else that would explain the same signal strengths.'
+    : `Direction is not observable with ${snap.nodes.length} node${snap.nodes.length===1?'':'s'}. One antenna hears a distance, never a bearing — so each device is drawn as the ring it could be anywhere on. Add nodes at known positions (\`airspace feed\`) and the rings start to intersect: two gives you two possible places, three gives you one.`;
+
+  document.getElementById('cap').textContent =
+    'Rings are estimated distance from a listening node. Distance comes from signal strength through a path-loss model, so a body in the way can move a ring by a factor of two. Click a device to see everywhere it could be.';
+
+  const ul = document.getElementById('list');
+  if(!n){ ul.innerHTML = '<li class="empty">nothing heard yet</li>'; return; }
+  ul.innerHTML = '';
+  // Nearest first, but bucketed to half a metre and tie-broken by address.
+  // Sorting on the raw estimate re-orders the whole list every two seconds as
+  // signal strength jitters, and a list that reshuffles under the cursor is a
+  // list you cannot click.
+  const near = d => d.heard.reduce((a,b)=> a.metres<b.metres?a:b);
+  const ordered = [...snap.devices].sort((a,b)=>
+    (Math.round(near(a).metres*2) - Math.round(near(b).metres*2)) || (a.id < b.id ? -1 : 1));
+  for(const d of ordered){
+    const n0 = near(d);
+    const li = document.createElement('li');
+    li.className = 'd' + (d.id===sel ? ' on' : '');
+    li.onclick = () => { sel = (sel===d.id ? null : d.id); render(); draw(); };
+    const doing = [...d.doing, ...d.leaks];
+    li.innerHTML =
+      `<div class="nm"><span>${esc(d.label)}</span><span class="m">${n0.metres.toFixed(1)} m · ${n0.rssi} dBm</span></div>` +
+      `<div class="addr">${esc(d.id)} <span class="tag${d.at==='public'?' perm':''}">${esc(d.at)}</span>` +
+      (d.heard.length>1?` <span class="tag">${d.heard.length} nodes</span>`:'') + `</div>` +
+      (doing.length ? `<ul class="doing">${doing.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>` : '');
+    ul.appendChild(li);
+  }
+}
+
+const esc = s => String(s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+
+async function tick(){
+  try{
+    const r = await fetch('/api/state', {cache:'no-store'});
+    snap = await r.json();
+    render(); draw();
+  }catch(e){ document.getElementById('sub').textContent = 'collector unreachable'; }
+}
+tick(); setInterval(tick, 2000);
+matchMedia('(prefers-color-scheme:dark)').addEventListener('change', draw);
+</script>

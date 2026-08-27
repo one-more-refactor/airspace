@@ -22,7 +22,7 @@ pub fn render(a: &Analysis) -> String {
     let _ = write!(
         h,
         r#"<header>
-<h1>Within earshot</h1>
+<h1>Within airspace</h1>
 <p class="lede">In {:.0} minutes of listening — no monitor mode, no root, no
 transmitting — this machine overheard <strong>{}</strong> addresses belonging to
 roughly <strong>{}</strong> devices. {} of those addresses were permanent ones
@@ -222,7 +222,7 @@ determined observer finds more.</dd>
 transmitted. An unprivileged user account read a bus every desktop session can
 read. That is the finding: this is the ambient, no-effort, default case.</dd>
 </dl></section>
-<footer>earshot · generated locally · no data left this machine</footer>"#,
+<footer>airspace · generated locally · no data left this machine</footer>"#,
         a.random_addrs(),
         a.tracks.len(),
         a.public_addrs(),
@@ -248,7 +248,7 @@ fn esc(s: &str) -> String {
 const HEAD: &str = r#"<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Within earshot</title>
+<title>Within airspace</title>
 <style>
 :root{--bg:#fbfaf8;--fg:#16150f;--dim:#6a675c;--line:#e2ded2;--card:#fff;--acc:#b4552b;--pub:#b4552b;--rot:#7c8b7a}
 @media (prefers-color-scheme:dark){:root{--bg:#100f0d;--fg:#eceae2;--dim:#8f8b7e;--line:#2a2823;--card:#181713;--acc:#e08a5a;--pub:#e08a5a;--rot:#8ea88b}}

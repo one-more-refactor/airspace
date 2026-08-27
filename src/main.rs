@@ -1,4 +1,4 @@
-//! earshot — a passive radio observatory.
+//! airspace — a passive radio observatory.
 //!
 //! Listens to what the devices around you broadcast on their own, without
 //! being asked, and renders it as a page you can show somebody.
@@ -11,6 +11,8 @@ mod analyse;
 mod model;
 mod observe;
 mod report;
+mod serve;
+mod space;
 
 use std::path::PathBuf;
 
@@ -18,15 +20,21 @@ use anyhow::Result;
 use tokio::io::AsyncWriteExt;
 
 const USAGE: &str = "\
-earshot — what the devices near you say out loud
+airspace — what the devices near you say out loud
 
 USAGE:
-    earshot watch [SECONDS]      listen and append to the capture (default: until Ctrl-C)
-    earshot report [OUT.html]    render the capture as a page (default: earshot.html)
-    earshot doctor               what this machine's radios can and cannot hear
+    airspace serve [BIND]        listen and serve the live picture (default: 127.0.0.1:9970)
+    airspace feed [URL]          listen here, report to a collector — this is how
+                                 direction becomes possible: one ear hears a distance,
+                                 three ears at known positions hear a place
+    airspace watch [SECONDS]     listen and append to the capture (default: until Ctrl-C)
+    airspace report [OUT.html]   render the capture as a page (default: airspace.html)
+    airspace doctor              what this machine\'s radios can and cannot hear
+
+    Room size and this node\'s position live in ~/.config/airspace/config.toml.
 
     --capture PATH               where observations live
-                                 (default: ~/.local/share/earshot/observations.jsonl)
+                                 (default: ~/.local/share/airspace/observations.jsonl)
 ";
 
 #[tokio::main]
@@ -51,6 +59,27 @@ async fn main() -> Result<()> {
     };
 
     match args.first().map(String::as_str).unwrap_or("help") {
+        "serve" => {
+            let cfg = space::Config::load()?;
+            let bind = positional
+                .first()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "127.0.0.1:9970".to_string());
+            serve::serve(space::State::new(cfg), &bind).await
+        }
+        "feed" => {
+            let cfg = space::Config::load()?;
+            let url = positional
+                .first()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| cfg.collector.url.clone());
+            if url.is_empty() {
+                anyhow::bail!("no collector: pass a URL or set collector.url in {}",
+                    space::Config::path().display());
+            }
+            let token = cfg.collector.token.clone();
+            serve::feed(space::State::new(cfg), &url, &token).await
+        }
         "watch" => {
             let secs = positional.first().and_then(|s| s.parse::<u64>().ok());
             watch(&capture, secs).await
@@ -59,7 +88,7 @@ async fn main() -> Result<()> {
             let out = positional
                 .first()
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("earshot.html"));
+                .unwrap_or_else(|| PathBuf::from("airspace.html"));
             render(&capture, &out)
         }
         "doctor" => doctor().await,
@@ -82,7 +111,7 @@ fn capture_path(args: &[String]) -> PathBuf {
             PathBuf::from(std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default())
                 .join(".local/share")
         });
-    base.join("earshot/observations.jsonl")
+    base.join("airspace/observations.jsonl")
 }
 
 async fn watch(capture: &PathBuf, secs: Option<u64>) -> Result<()> {
@@ -145,7 +174,7 @@ async fn watch(capture: &PathBuf, secs: Option<u64>) -> Result<()> {
 
 fn render(capture: &PathBuf, out: &PathBuf) -> Result<()> {
     let text = std::fs::read_to_string(capture)
-        .map_err(|e| anyhow::anyhow!("{}: {e} — run `earshot watch` first", capture.display()))?;
+        .map_err(|e| anyhow::anyhow!("{}: {e} — run `airspace watch` first", capture.display()))?;
     let obs: Vec<model::Observation> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -175,7 +204,7 @@ async fn doctor() -> Result<()> {
             let _ = l.start().await;
             println!("  ✓ adapter present and powered");
             println!("  ✓ advertising channels readable with no root and no monitor mode");
-            println!("    → `earshot watch` works on this machine right now");
+            println!("    → `airspace watch` works on this machine right now");
         }
         Err(e) => println!("  ✗ {e}"),
     }
