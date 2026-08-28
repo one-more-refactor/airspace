@@ -118,6 +118,21 @@ impl Listener {
                 cmsg,
                 service,
                 paired: get("Paired").and_then(|v| bool::try_from(v.clone()).ok()).unwrap_or(false),
+                tx_power: get("TxPower").and_then(|v| i16::try_from(v.clone()).ok()),
+                class: get("Class").and_then(|v| u32::try_from(v.clone()).ok()),
+                icon: get("Icon")
+                    .and_then(|v| <&str>::try_from(v).ok())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                modalias: get("Modalias")
+                    .and_then(|v| <&str>::try_from(v).ok())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+                // BlueZ hands these over as an array; only the first octet
+                // carries the discoverability and BR/EDR bits.
+                flags: get("AdvertisingFlags")
+                    .and_then(|v| <Vec<u8>>::try_from(v.clone()).ok())
+                    .and_then(|v| v.first().copied()),
             });
         }
         Ok(out)

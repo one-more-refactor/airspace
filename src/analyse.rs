@@ -260,6 +260,11 @@ mod tests {
             cmsg: company.iter().map(|c| (*c, 0x10u8)).collect(),
             service: vec![],
             paired: false,
+            tx_power: None,
+            class: None,
+            icon: None,
+            modalias: None,
+            flags: None,
         }
     }
 
