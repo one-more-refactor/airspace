@@ -212,8 +212,14 @@ impl State {
                 .iter()
                 .filter(|(_, (_, t))| now.saturating_sub(*t) <= STALE)
                 .map(|(n, (r, t))| {
-                    let tx = i.meta.get(addr).and_then(|o| o.tx_power);
-                    let (metres, calibrated) = crate::model::metres_with_tx(*r, tx);
+                    let m = i.meta.get(addr);
+                    let (metres, calibrated) = match m.map(|o| o.src.as_str()) {
+                        // Wi-Fi is a different radio problem and gets its own
+                        // constants; sharing them would put every laptop in the
+                        // building on the far side of the street.
+                        Some("wifi") => (crate::model::wifi_metres(*r), false),
+                        _ => crate::model::metres_with_tx(*r, m.and_then(|o| o.tx_power)),
+                    };
                     Heard { node: n.clone(), rssi: *r, metres, calibrated, age: now.saturating_sub(*t) }
                 })
                 .collect();
@@ -223,6 +229,9 @@ impl State {
             let Some(o) = i.meta.get(addr) else { continue };
 
             let mut doing = Vec::new();
+            if let Some(d) = &o.doing {
+                doing.push(d.clone());
+            }
             for (c, m) in &o.cmsg {
                 let d = match c {
                     0x004C => apple_message(*m),
@@ -319,6 +328,8 @@ mod tests {
             icon: None,
             modalias: None,
             flags: None,
+            src: "ble".into(),
+            doing: None,
         }
     }
 

@@ -78,24 +78,56 @@ even exposes. Whatever airspace finds, a determined observer finds more.
 
 ## Wi-Fi
 
-Not implemented, and the reason is worth knowing before you go looking for it.
-
-Wi-Fi is where identification stops being about devices and starts being about
-people. A phone that is not currently connected to anything sends probe requests
-asking after networks it has joined before — and that list of network names is a
-list of the places its owner has been. Home, work, a hotel, a clinic. Bluetooth
-tells you *something is here*; the preferred-network list tells you *who*.
-
-Reading it needs the radio in monitor mode, and most laptop Wi-Fi chips will
-not do it. Check yours:
+Bluetooth tells you something is present. Wi-Fi tells you rather more — every
+device associated to an access point announces itself constantly, including
+laptops, televisions and consoles with no Bluetooth presence at all.
 
 ```
-$ airspace doctor
+sudo setcap cap_net_raw+ep ~/.local/bin/airspace
+sudo iw phy phy0 interface add mon0 type monitor
+sudo ip link set mon0 up && sudo iw dev mon0 set channel 6
+airspace wifi mon0
 ```
 
-If it says no, a USB adapter on `mt7921au` or `mt7612u` is the usual fix. The
-capture side would be a second listener writing the same observation format; the
-state, the map and the page would not need to change.
+It feeds the same collector as everything else, so Wi-Fi devices appear on the
+same map with the same distance rings.
+
+**This is the one part that needs a privilege.** A raw packet socket requires
+`CAP_NET_RAW`. The Bluetooth half deliberately needs nothing at all, and folding
+the two into one process would make the whole tool demand a capability for the
+sake of one of its two radios — so the Wi-Fi ear is a separate command you grant
+separately, or do not run.
+
+### What a frame actually gives up
+
+Measured on an RTL8852BE, which several wikis say cannot do monitor mode and
+which does it fine under the in-kernel `rtw89`:
+
+* the transmitter's MAC, and whether it is randomised — the locally-administered
+  bit is the same public/private split Bluetooth has, one bit in both;
+* signal strength, per antenna;
+* what the device is doing: probing, beaconing, or carrying traffic;
+* network names from beacons and probe responses.
+
+### The probe-request myth, corrected
+
+The widely repeated claim is that a phone broadcasts every network it has ever
+joined, making a probe request a travel history. That was true and is now mostly
+not: modern iOS and Android send **wildcard** probes with no name in them. The
+first capture on the machine this was built against contained exactly that — a
+probe request with an empty SSID.
+
+The leak is still real for older devices, laptops, IoT things and anything
+hunting a hidden network. But it is a minority of devices now, not all of them,
+and a tool that assumes otherwise is selling a scare rather than a measurement.
+airspace records the names it actually sees and claims nothing about the rest.
+
+### Channels
+
+A monitor interface hears one channel at a time, so every device is reported
+with the channel it was heard on — that number is as much a statement about what
+the listener could hear as about the device. Hopping needs `CAP_NET_ADMIN` on
+top, and airspace deliberately does not reconfigure your radio behind your back.
 
 ## Configuration
 

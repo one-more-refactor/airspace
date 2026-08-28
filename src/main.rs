@@ -13,8 +13,11 @@ mod observe;
 mod report;
 mod serve;
 mod space;
+mod wifi;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use tokio::io::AsyncWriteExt;
@@ -27,6 +30,8 @@ USAGE:
     airspace feed [URL]          listen here, report to a collector — this is how
                                  direction becomes possible: one ear hears a distance,
                                  three ears at known positions hear a place
+    airspace wifi IFACE          listen on a monitor interface too, feeding the
+                                 same map. Needs CAP_NET_RAW — see the README.
     airspace watch [SECONDS]     listen and append to the capture (default: until Ctrl-C)
     airspace report [OUT.html]   render the capture as a page (default: airspace.html)
     airspace doctor              what this machine\'s radios can and cannot hear
@@ -80,6 +85,13 @@ async fn main() -> Result<()> {
             let token = cfg.collector.token.clone();
             serve::feed(space::State::new(cfg), &url, &token).await
         }
+        "wifi" => {
+            let cfg = space::Config::load()?;
+            let iface = positional.first().map(|s| s.to_string()).unwrap_or_else(|| "mon0".into());
+            let url = cfg.collector.url.clone();
+            let token = cfg.collector.token.clone();
+            init_wifi(cfg, &iface, &url, &token).await
+        }
         "watch" => {
             let secs = positional.first().and_then(|s| s.parse::<u64>().ok());
             watch(&capture, secs).await
@@ -95,6 +107,80 @@ async fn main() -> Result<()> {
         _ => {
             print!("{USAGE}");
             Ok(())
+        }
+    }
+}
+
+/// The Wi-Fi ear: a privileged listener that feeds the unprivileged collector.
+///
+/// It runs as its own process on purpose. Capture needs CAP_NET_RAW, and the
+/// rest of airspace deliberately needs nothing at all. Folding the two together
+/// would make the whole tool demand a privilege for the sake of one of its two
+/// radios, and the Bluetooth half's whole argument is that it needs none.
+async fn init_wifi(cfg: space::Config, iface: &str, url: &str, token: &str) -> Result<()> {
+    let url = if url.is_empty() {
+        "http://127.0.0.1:9970/ingest".to_string()
+    } else {
+        url.to_string()
+    };
+    let (host, path) = serve::split_url(&url)?;
+    let node = cfg.node.clone();
+    let mut sniffer = wifi::Sniffer::open(iface)?;
+    eprintln!("wifi: listening on {iface}, feeding {host}{path} as node {:?}", node.name);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<model::Observation>(4096);
+    std::thread::Builder::new()
+        .name("wifi-sniff".into())
+        .spawn(move || loop {
+            match sniffer.recv() {
+                Ok(Some(f)) => {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    if tx.blocking_send(f.observation(now)).is_err() {
+                        return;
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("wifi capture stopped: {e}");
+                    return;
+                }
+            }
+        })?;
+
+    // A busy channel is thousands of frames a second, almost all of them the
+    // same handful of devices saying nothing new. Collapse to one observation
+    // per address per flush — but merge rather than overwrite, or a data frame
+    // arriving after a beacon would erase the network name the beacon carried.
+    let mut pending: HashMap<String, model::Observation> = HashMap::new();
+    let mut tick = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        tokio::select! {
+            Some(o) = rx.recv() => {
+                match pending.get_mut(&o.addr) {
+                    Some(prev) => {
+                        let keep_name = prev.name.clone();
+                        let keep_doing = prev.doing.clone();
+                        *prev = o;
+                        if prev.name.is_none() { prev.name = keep_name; }
+                        if prev.doing.is_none() { prev.doing = keep_doing; }
+                    }
+                    None => { pending.insert(o.addr.clone(), o); }
+                }
+            }
+            _ = tick.tick() => {
+                if pending.is_empty() { continue; }
+                let obs: Vec<model::Observation> = pending.drain().map(|(_, v)| v).collect();
+                let n = obs.len();
+                let body = serde_json::to_vec(&serve::Batch { node: node.clone(), obs })?;
+                if let Err(e) = serve::post(&host, &path, token, &body).await {
+                    eprintln!("collector unreachable: {e}");
+                } else {
+                    eprint!("\r{n} wi-fi devices in the last sweep   ");
+                }
+            }
         }
     }
 }

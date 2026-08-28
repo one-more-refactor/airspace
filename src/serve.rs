@@ -100,7 +100,7 @@ pub async fn feed(state: State, url: &str, token: &str) -> Result<()> {
     }
 }
 
-async fn post(host: &str, path: &str, token: &str, body: &[u8]) -> Result<()> {
+pub async fn post(host: &str, path: &str, token: &str, body: &[u8]) -> Result<()> {
     let mut sock = TcpStream::connect(host).await?;
     let head = format!(
         "POST {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\n\
@@ -115,7 +115,7 @@ async fn post(host: &str, path: &str, token: &str, body: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn split_url(url: &str) -> Result<(String, String)> {
+pub fn split_url(url: &str) -> Result<(String, String)> {
     let rest = url.strip_prefix("http://").unwrap_or(url);
     let (host, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),

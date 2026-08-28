@@ -51,6 +51,28 @@ pub struct Observation {
     /// separates a modern tag or wearable from a dual-mode phone or laptop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flags: Option<u8>,
+    /// Which radio heard this — "ble" or "wifi". Defaulted rather than required
+    /// so captures written before the Wi-Fi ear existed still parse.
+    #[serde(default = "ble")]
+    pub src: String,
+    /// What the frame or advertisement says the device is doing, when the
+    /// protocol says so in the clear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doing: Option<String>,
+}
+
+fn ble() -> String {
+    "ble".to_string()
+}
+
+/// Distance for Wi-Fi, which is a different radio problem from Bluetooth: far
+/// more transmit power, so a client at one metre reads around -40 dBm rather
+/// than -59. The exponent is higher too, because Wi-Fi is habitually used
+/// through more walls than a pair of earbuds is.
+pub fn wifi_metres(rssi: i16) -> f32 {
+    const AT_ONE_METRE: f32 = -40.0;
+    const EXPONENT: f32 = 3.0;
+    10f32.powf((AT_ONE_METRE - rssi as f32) / (10.0 * EXPONENT))
 }
 
 /// Bluetooth SIG company identifiers, the ones you actually meet in a flat.
