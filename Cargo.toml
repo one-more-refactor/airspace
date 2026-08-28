@@ -3,7 +3,7 @@ name = "airspace"
 version = "0.1.0-alpha"
 edition = "2021"
 rust-version = "1.80"
-description = "A passive radio observatory: what your devices, and everyone else's, say out loud within airspace."
+description = "A passive radio observatory: what the devices around you say out loud, without being asked."
 license = "GPL-3.0-or-later"
 repository = "https://github.com/one-more-refactor/airspace"
 readme = "README.md"
@@ -17,6 +17,9 @@ serde_json = "1"
 toml = "0.8"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 anyhow = "1"
+# One raw packet socket for the Wi-Fi ear. A pcap crate would bring a C library
+# and a build dependency along to wrap two syscalls.
+libc = "0.2"
 
 [profile.release]
 lto = true

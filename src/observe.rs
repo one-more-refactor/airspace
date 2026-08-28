@@ -133,6 +133,8 @@ impl Listener {
                 flags: get("AdvertisingFlags")
                     .and_then(|v| <Vec<u8>>::try_from(v.clone()).ok())
                     .and_then(|v| v.first().copied()),
+                src: "ble".into(),
+                doing: None,
             });
         }
         Ok(out)

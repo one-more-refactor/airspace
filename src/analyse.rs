@@ -265,6 +265,8 @@ mod tests {
             icon: None,
             modalias: None,
             flags: None,
+            src: "ble".into(),
+            doing: None,
         }
     }
 
