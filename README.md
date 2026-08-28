@@ -2,7 +2,7 @@
 
 What the devices around you say out loud, without being asked — as a live map.
 
-> **Alpha — v0.1.0-alpha.** Bluetooth only so far. Interfaces and output format
+> **Alpha — v0.1.0-alpha.** Bluetooth and Wi-Fi. Interfaces and output format
 > will change.
 >
 > **Provenance:** written by Claude Code, from my design brief and against my
@@ -153,6 +153,7 @@ token = ""        # shared secret; ingest refuses to run without one
 ```
 airspace serve [BIND]      listen and serve the live picture (default 127.0.0.1:9970)
 airspace feed [URL]        listen here, report to a collector
+airspace wifi IFACE        listen on a monitor interface too (needs CAP_NET_RAW)
 airspace watch [SECONDS]   append to a capture file instead
 airspace report [OUT.html] render a capture as a standalone page
 airspace doctor            what this machine's radios can and cannot hear
@@ -169,7 +170,9 @@ cargo build --release
 install -Dm755 target/release/airspace ~/.local/bin/airspace
 ```
 
-Needs a working BlueZ. No root, no capabilities, no group membership.
+Needs a working BlueZ. The Bluetooth half needs no root, no capabilities and no
+group membership. The Wi-Fi half needs `CAP_NET_RAW` and a monitor interface,
+and is a separate command precisely so that stays true of everything else.
 
 ## A word about the capture file
 
