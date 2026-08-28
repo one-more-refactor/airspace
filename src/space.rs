@@ -113,6 +113,9 @@ pub struct Heard {
     pub rssi: i16,
     /// Metres, from the path-loss model. Wrong, but wrong in a documented way.
     pub metres: f32,
+    /// True when the distance used the power the device advertises rather than
+    /// an assumed one. The UI says which, because they are not equally good.
+    pub calibrated: bool,
     pub age: u64,
 }
 
@@ -208,11 +211,10 @@ impl State {
             let heard: Vec<Heard> = per_node
                 .iter()
                 .filter(|(_, (_, t))| now.saturating_sub(*t) <= STALE)
-                .map(|(n, (r, t))| Heard {
-                    node: n.clone(),
-                    rssi: *r,
-                    metres: crate::model::rough_metres(*r),
-                    age: now.saturating_sub(*t),
+                .map(|(n, (r, t))| {
+                    let tx = i.meta.get(addr).and_then(|o| o.tx_power);
+                    let (metres, calibrated) = crate::model::metres_with_tx(*r, tx);
+                    Heard { node: n.clone(), rssi: *r, metres, calibrated, age: now.saturating_sub(*t) }
                 })
                 .collect();
             if heard.is_empty() {
@@ -231,6 +233,25 @@ impl State {
                     doing.push(d.to_string());
                 }
             }
+            // Everything that narrows down WHAT the thing is, best evidence
+            // first: an exact model beats a category beats a guess.
+            let mut kind: Vec<String> = Vec::new();
+            if let Some(m) = &o.modalias {
+                kind.push(format!("exact model, from its modalias: {m}"));
+            }
+            if let Some(c) = o.class.and_then(crate::model::device_class) {
+                kind.push(format!("device class says: {c}"));
+            }
+            if let Some(ic) = &o.icon {
+                kind.push(format!("BlueZ classifies it as: {ic}"));
+            }
+            if let Some(f) = o.flags {
+                kind.push(crate::model::radio_kind(f).to_string());
+            }
+            if o.service.iter().any(|s| s.get(4..8).is_some_and(|x| x.eq_ignore_ascii_case("1812"))) {
+                kind.push("advertises HID — a keyboard, mouse or controller".into());
+            }
+
             let mut leaks: Vec<String> = o
                 .service
                 .iter()
@@ -242,6 +263,7 @@ impl State {
             }
 
             let v = o.company.iter().find_map(|c| vendor(*c)).map(str::to_string);
+            leaks.extend(kind);
             devices.push(Live {
                 id: addr.clone(),
                 label: o.name.clone().unwrap_or_else(|| match &v {
@@ -292,6 +314,11 @@ mod tests {
             cmsg: vec![(0x004C, 0x10)],
             service: vec![],
             paired: false,
+            tx_power: None,
+            class: None,
+            icon: None,
+            modalias: None,
+            flags: None,
         }
     }
 
