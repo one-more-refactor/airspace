@@ -23,21 +23,44 @@ probably is, and what it announced about itself while announcing its presence.
 airspace-console
 ```
 
-One screen: the room, with the things in it. Modes are overlays rather than
-tabs, so you never lose your bearings.
+Full screen, chunky, and it moves. The design rule is that **you should never
+need to be told what a word means to use it** — and the second rule, learned
+from the measuring screen, is that a tool you walk around a flat with has to be
+readable from across that flat.
 
 ```
-┌──────────────────────────────────────────┐  philip's phone
-│              ············                │    in this room
-│         ·····            ·····           │    3.2 m · estimated
-│      ···                      ···        │    ▰▰▰▰▰ carl
-│     ··          ◈ carl           ··      │
-│      ···                      ···        │  airpods
-│         ·····            ·····           │    next room, or through a wall
-│  ◆ ear1      ············                │    ▰▱▱▱▱ carl
-└──────────────────────────────────────────┘      only catches it occasionally
- tab next node · m move it · c measure · q quit
+        ███ █ █ ███ █   ███ ███  █  ███     ███ █ █ ███ ██  ███
+         ███ ███  █  █    █  ███     ███     ███ ███ █ █ █ █ ██
+        █   █ █ ███ ███ ███ █       ███     █   █ █ ███ █ █ ███
+
+                IN THIS ROOM   ·   3.2 m   ·   estimated
+        ╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸
+              ┌─────────────────────────────────────┐
+              │              ···········            │
+              │          ···              ···       │
+              │        ·         ◆ CARL      ·      │
+              │          ···              ···       │
+              │  ◆ EAR1      ···········            │
+              └─────────────────────────────────────┘
+
+           CARL  ━━━━━━━━━━━━━━━━━━━━  hears it consistently
+           EAR1  ━━━━━━━━━━━━──────────  most of the time
+
+              ▸ PHILIP'S PHONE     AIRPODS     WATCH
 ```
+
+**Measuring is a run you walk, not a key you press.** You cannot press enter
+while standing eight metres away holding your phone, so you press it once and
+the screen takes over: ripples expand from the node, a countdown you can read
+from across the room ticks down, and at zero it captures and walks you to the
+next station by itself. Four stations, about forty-five seconds, hands-free
+after the first press. The live signal bar moves as you walk, so you can see
+the thing being measured respond to you.
+
+**Everything animates.** Rings breathe, the selected node pulses, the headline
+brightens when a device comes close. A static picture of a live system is one
+that can be stale without looking stale — and going silently stale is the
+failure this project has met more than any other.
 
 **Devices are rings, not dots.** With one node that is genuinely all that is
 known, and a dot would be an invention. The rings tighten into a point as ears

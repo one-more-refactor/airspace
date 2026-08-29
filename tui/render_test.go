@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,11 +58,21 @@ func TestDegenerateStatesDoNotPanic(t *testing.T) {
 		m.mode = mo
 		_ = m.View()
 	}
-	// A device that is not currently heard by anything.
-	m.snap.Devices = []Device{{ID: "x", Label: "silent"}}
+	// A device nothing can currently hear must still appear. The HUD shows one
+	// device large, so the roster is what stops the others vanishing — and a
+	// screen that quietly drops two thirds of what it tracks to look tidy is
+	// the same class of lie as a blind daemon that reports a quiet room.
+	m.snap.Devices = []Device{
+		{ID: "a", Label: "philip's phone", Heard: []Heard{{Node: "carl", Metres: 2, HeardRatio: 1}}},
+		{ID: "x", Label: "silent"},
+	}
 	m.mode = modeWatch
-	if !strings.Contains(m.View(), "silent") {
-		t.Fatal("a device with no readings should still be listed")
+	out := m.View()
+	if !strings.Contains(out, "SILENT") {
+		t.Fatal("a device with no readings should still be listed in the roster")
+	}
+	if !strings.Contains(out, bigText("PHILIP'S PHONE")[0]) {
+		t.Fatal("the focused device should be the headline")
 	}
 }
 
@@ -71,8 +82,19 @@ func TestDegenerateStatesDoNotPanic(t *testing.T) {
 func TestSaysSoWhenItCannotReachTheCollector(t *testing.T) {
 	m := model{api: newClient("http://127.0.0.1:1"), moved: map[string]point{}, width: 100, height: 30}
 	out := m.View()
-	if !strings.Contains(out, "Listening") && !strings.Contains(out, "Cannot reach") {
-		t.Fatalf("must say what is happening, got: %q", out)
+	// The headline is drawn in blocks now, so assert on what it renders to
+	// rather than on the words — the point of the test is that the console
+	// states its condition, not that it uses a particular string.
+	if !strings.Contains(out, bigText("LISTENING")[0]) {
+		t.Fatalf("must say it is waiting rather than showing an empty room, got: %q", out)
+	}
+
+	// And once it has failed, it must say so rather than keep saying it is
+	// waiting — a console that looks patient while the collector is gone is
+	// the same silent failure as a blind daemon.
+	m.lastErr = errors.New("connection refused")
+	if !strings.Contains(m.View(), bigText("NO LINK")[0]) {
+		t.Fatal("a failed connection must be visible, not implied")
 	}
 }
 
