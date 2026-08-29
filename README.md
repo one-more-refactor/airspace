@@ -49,6 +49,31 @@ readable from across that flat.
               ▸ PHILIP'S PHONE     AIRPODS     WATCH
 ```
 
+### Why measuring asks you to keep moving
+
+RSSI calibration is rough, and the reason is physics rather than software.
+Standing still samples **one** multipath realisation: at 2.4 GHz the wavelength
+is 12 cm, so constructive and destructive interference swing the reading by
+±10 dB across the width of your hand. Averaging for longer in the same spot
+removes receiver noise and leaves that error entirely untouched.
+
+Walking does remove it. A slow arc at the target radius sweeps through many
+realisations, and their median is the actual path loss at that distance. So the
+whole ten seconds is the sampling window, the instruction is to circle rather
+than stand, and the **spread** is reported at the end — a suspiciously tight
+spread usually means you stood still, and the number is worth less than it
+looks.
+
+Stations adapt to the room. Eight metres in a small flat is a reading taken
+through a wall, which is not the same propagation as the other three and drags
+the exponent up, quietly widening every distance the model later reports. A
+10 × 8 m room gets 1 / 1.9 / 3.5 / 6.6 m; a 4 × 3 m one gets 1 / 1.4 / 2.1 / 3.
+
+The honest ceiling: this gets you to roughly a metre or two, which is what
+room-level presence needs. Sub-metre positioning is not available from signal
+strength at any amount of care — that needs angle-of-arrival (Bluetooth 5.1
+direction finding) or ultra-wideband, both of which are different hardware.
+
 **Measuring is a run you walk, not a key you press.** You cannot press enter
 while standing eight metres away holding your phone, so you press it once and
 the screen takes over: ripples expand from the node, a countdown you can read

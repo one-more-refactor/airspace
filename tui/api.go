@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/charmbracelet/lipgloss"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -82,7 +83,30 @@ func (c *client) state() (*Snapshot, error) {
 type fitResult struct {
 	RSSIAtOneMetre float64 `json:"rssi_at_1m"`
 	Exponent       float64 `json:"exponent"`
-	Samples        int     `json:"samples"`
+	// How far the readings sat from the fitted line, in dB. The error bar on
+	// every distance this model will later produce.
+	RMSdB   float64 `json:"rms_db"`
+	Samples int     `json:"samples"`
+}
+
+// fitQuality turns the residual into a verdict and a colour.
+//
+// The thresholds come from what the radio can actually do. A BLE controller
+// reports RSSI to the nearest dB and is specified to about ±6 dB; small-scale
+// fading in a furnished room swings ±10 dB over the length of your hand. So
+// under 3 dB of residual is as good as this measurement gets, and over 8 means
+// the readings are describing something other than distance.
+func fitQuality(rms float64) (string, lipgloss.Color) {
+	switch {
+	case rms < 3:
+		return "TIGHT", cGood
+	case rms < 6:
+		return "USABLE", cGood
+	case rms < 9:
+		return "NOISY", cWarn
+	default:
+		return "DOESN'T FIT — REDO IT", cBad
+	}
 }
 
 // fit hands the samples to the collector rather than doing the arithmetic here.
