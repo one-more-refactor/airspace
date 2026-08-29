@@ -156,8 +156,13 @@ pub fn split_url(url: &str) -> Result<(String, String)> {
 async fn handle(mut sock: TcpStream, state: Arc<State>) -> Result<()> {
     let mut buf = Vec::with_capacity(2048);
     let mut chunk = [0u8; 2048];
+    let head_deadline = std::time::Duration::from_secs(10);
     let head_end = loop {
-        let n = sock.read(&mut chunk).await?;
+        let n = match tokio::time::timeout(head_deadline, sock.read(&mut chunk)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return reply(&mut sock, "408 Request Timeout", "text/plain", b"").await,
+        };
         if n == 0 {
             return Ok(());
         }
@@ -199,9 +204,21 @@ async fn handle(mut sock: TcpStream, state: Arc<State>) -> Result<()> {
             if len > MAX_BODY {
                 return reply(&mut sock, "413 Payload Too Large", "text/plain", b"").await;
             }
+            // A client that announces a large Content-Length and then sends
+            // nothing holds this task open forever. That is slowloris: a
+            // handful of connections and the collector stops answering, with
+            // no error anywhere because nothing has failed — it is still
+            // politely waiting. Every read gets a deadline.
             let mut body = buf[head_end..].to_vec();
+            let deadline = std::time::Duration::from_secs(10);
             while body.len() < len {
-                let n = sock.read(&mut chunk).await?;
+                let n = match tokio::time::timeout(deadline, sock.read(&mut chunk)).await {
+                    Ok(Ok(n)) => n,
+                    Ok(Err(_)) => break,
+                    Err(_) => {
+                        return reply(&mut sock, "408 Request Timeout", "text/plain", b"").await
+                    }
+                };
                 if n == 0 {
                     break;
                 }
