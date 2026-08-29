@@ -20,6 +20,10 @@ anyhow = "1"
 # One raw packet socket for the Wi-Fi ear. A pcap crate would bring a C library
 # and a build dependency along to wrap two syscalls.
 libc = "0.2"
+# AES-128 for the one function that resolves a rotating address back to a
+# device you hold the key for. RustCrypto rather than a TLS stack: this is a
+# single block cipher call, not a protocol.
+aes = "0.8"
 
 [profile.release]
 lto = true
