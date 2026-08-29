@@ -22,6 +22,16 @@ CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 
+# Send the console out of the USB port rather than UART0.
+#
+# ESP-IDF defaults the console to UART0, which on this board is a pair of pins
+# nobody has a cable on — so the firmware boots, logs everything correctly, and
+# looks completely dead over USB. Since the only physical connection to this
+# board is the USB-serial-JTAG peripheral, that is where the log has to go, or
+# the wi-fi bring-up is undebuggable.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_UART_DEFAULT=n
+
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

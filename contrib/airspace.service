@@ -8,7 +8,12 @@ Wants=bluetooth.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/airspace serve 127.0.0.1:9970
+# 0.0.0.0 rather than loopback, because the remote ears have to reach it and a
+# DHCP lease makes a fixed bind fragile. Note what this exposes: /api/state and
+# the map are NOT authenticated, so anyone who can reach this port can see the
+# devices around you. Only /ingest is token-checked. On a trusted LAN that is a
+# considered trade; in front of a flat tailnet it is worth a second thought.
+ExecStart=%h/.local/bin/airspace serve 0.0.0.0:9970
 Restart=on-failure
 RestartSec=3
 

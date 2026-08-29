@@ -1,0 +1,50 @@
+# The Wi-Fi ear. A SYSTEM unit, unlike the collector, because a monitor
+# interface and a raw packet socket both need privileges the collector
+# deliberately does not have.
+#
+# Install:
+#   sudo install -Dm644 contrib/airspace-wifi.service /etc/systemd/system/
+#   sudo setcap cap_net_raw+ep /home/philip/.local/bin/airspace
+#   sudo systemctl enable --now airspace-wifi
+[Unit]
+Description=airspace — Wi-Fi ear on a monitor interface
+Documentation=https://github.com/one-more-refactor/airspace
+After=network.target
+
+[Service]
+Type=simple
+User=philip
+Group=philip
+
+# Setting the radio up needs root; listening to it does not. The '+' prefix
+# runs these as root regardless of User= above, and the ear itself then drops
+# to philip with exactly one capability.
+#
+# Recreated on every start because none of it survives a reboot: rfkill state
+# is restored by systemd-rfkill, and the monitor interface simply does not
+# exist until something makes it.
+ExecStartPre=+/usr/bin/rfkill unblock wifi
+ExecStartPre=+/bin/sh -c '/usr/bin/iw dev mon0 info >/dev/null 2>&1 || /usr/bin/iw phy phy0 interface add mon0 type monitor'
+ExecStartPre=+/usr/bin/ip link set mon0 up
+ExecStartPre=+/usr/bin/iw dev mon0 set channel 6
+ExecStart=/home/philip/.local/bin/airspace wifi mon0
+
+# Tear the interface down again on stop, so a disabled unit leaves no monitor
+# interface sitting on the radio.
+ExecStopPost=+/bin/sh -c '/usr/bin/iw dev mon0 del || true'
+
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=false
+Restart=on-failure
+RestartSec=5
+
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_PACKET
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
