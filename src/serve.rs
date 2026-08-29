@@ -188,6 +188,55 @@ async fn handle(mut sock: TcpStream, state: Arc<State>) -> Result<()> {
             let body = serde_json::to_vec(&state.snapshot())?;
             reply(&mut sock, "200 OK", "application/json", &body).await
         }
+        // Fit a path-loss model to samples the console collected.
+        //
+        // The console does the measuring and owns the file; the collector does
+        // the arithmetic. That split keeps the fit in the one place it is
+        // tested, and keeps the daemon from ever needing write access to a
+        // home directory its unit mounts read-only.
+        ("POST", "/api/fit") => {
+            let len: usize = header(&head, "content-length")
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            if len == 0 || len > 64 * 1024 {
+                return reply(&mut sock, "400 Bad Request", "text/plain", b"").await;
+            }
+            let mut body = buf[head_end..].to_vec();
+            let deadline = std::time::Duration::from_secs(10);
+            while body.len() < len {
+                let n = match tokio::time::timeout(deadline, sock.read(&mut chunk)).await {
+                    Ok(Ok(n)) => n,
+                    _ => break,
+                };
+                if n == 0 {
+                    break;
+                }
+                body.extend_from_slice(&chunk[..n]);
+            }
+            #[derive(serde::Deserialize)]
+            struct Req {
+                samples: Vec<(f32, i16)>,
+            }
+            match serde_json::from_slice::<Req>(&body) {
+                Ok(r) => match crate::model::fit(&r.samples) {
+                    Some((rssi_at_1m, exponent)) => {
+                        let out = serde_json::json!({
+                            "rssi_at_1m": rssi_at_1m,
+                            "exponent": exponent,
+                            "samples": r.samples.len(),
+                        });
+                        reply(&mut sock, "200 OK", "application/json",
+                              &serde_json::to_vec(&out)?).await
+                    }
+                    // Refusing is the useful answer: it means the readings do
+                    // not describe a radio getting weaker with distance, and
+                    // storing a fit anyway would bake that in.
+                    None => reply(&mut sock, "422 Unprocessable Content", "text/plain",
+                                  b"those readings do not fit a path-loss model").await,
+                },
+                Err(_) => reply(&mut sock, "400 Bad Request", "text/plain", b"").await,
+            }
+        }
         ("POST", "/ingest") => {
             let want = state.config.collector.token.trim();
             let given = header(&head, "authorization")
