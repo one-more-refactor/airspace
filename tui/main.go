@@ -52,7 +52,8 @@ type model struct {
 	lastErr error
 	lastOK  time.Time
 
-	sel int // selected node, in snapshot order
+	sel    int // selected node, in snapshot order
+	devSel int // focused device, the one shown large
 
 	// moving
 	moved map[string]point // pending positions, not yet written
@@ -74,6 +75,12 @@ type model struct {
 	calNote       string
 
 	width, height int
+	// Frames since start, for anything that moves. The whole console animates
+	// now, not only the measuring screen: a room where the rings breathe and
+	// the node you have selected pulses tells you what is live at a glance,
+	// and a static picture of a live system is a picture that can be stale
+	// without looking stale.
+	frame int
 }
 
 // Spread over a decade so the fit has real leverage on the exponent. Readings
@@ -92,7 +99,7 @@ func main() {
 	}
 }
 
-func (m model) Init() tea.Cmd { return tea.Batch(fetch(m.api), tick()) }
+func (m model) Init() tea.Cmd { return tea.Batch(fetch(m.api), tick(), frame()) }
 
 func tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -153,8 +160,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case frameMsg:
+		m.frame++
 		if m.mode != modeCalibrate {
-			return m, nil
+			// Keep animating in every mode; the measuring screen owns the rest
+			// of this branch only because it also drives a state machine.
+			return m, frame()
 		}
 		m.calFrame++
 		if !m.calRun {
@@ -226,7 +236,14 @@ func (m model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeWatch:
 		switch msg.String() {
-		case "tab", "n":
+		case "tab":
+			// Watching is about your devices; moving is about the ears. Making
+			// tab mean two different things depending on mode is worse than
+			// making it mean the obvious thing in each.
+			if m.snap != nil && len(m.snap.Devices) > 0 {
+				m.devSel = (m.devSel + 1) % len(m.snap.Devices)
+			}
+		case "n":
 			if len(ns) > 0 {
 				m.sel = (m.sel + 1) % len(ns)
 			}
@@ -237,7 +254,10 @@ func (m model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "c":
 			if m.snap != nil && len(m.snap.Devices) > 0 {
 				m.mode = modeCalibrate
-				m.calDevice, m.calStage, m.calSamples = m.snap.Devices[0].Label, 0, nil
+				if d := m.focusedDevice(); d != nil {
+					m.calDevice = d.Label
+				}
+				m.calStage, m.calSamples = 0, nil
 				m.calFitted, m.calStatus = nil, ""
 				m.calRun, m.calNote, m.calFrame = false, "", 0
 				return m, frame()
@@ -375,47 +395,35 @@ var (
 func (m model) View() string {
 	if m.snap == nil {
 		if m.lastErr != nil {
-			return "\n  " + alarm.Render("Cannot reach the collector.") + "\n  " +
-				dim.Render(m.lastErr.Error()) + "\n\n  " +
-				dim.Render("Is it running?  systemctl --user status airspace") + "\n"
+			var b strings.Builder
+			for _, row := range centred(bigText("NO LINK"), m.width) {
+				b.WriteString(stBad.Render(row) + "\n")
+			}
+			b.WriteString("\n" + centreLine(stMuted.Render(m.lastErr.Error()), m.width) + "\n")
+			b.WriteString(centreLine(stFaint.Render(
+				"systemctl --user status airspace"), m.width) + "\n")
+			return "\n\n" + b.String()
 		}
-		return "\n  " + dim.Render("Listening…") + "\n"
+		var b strings.Builder
+		t := breathe(float64(m.frame), 20)
+		for _, row := range centred(bigText("LISTENING"), m.width) {
+			b.WriteString(lipgloss.NewStyle().Foreground(fade(cFaint, cNode, t)).Render(row) + "\n")
+		}
+		return "\n\n" + b.String()
 	}
 
-	// Measuring takes the whole screen: for those forty seconds it is the only
-	// thing happening, and a countdown tucked in a sidebar is one you cannot
-	// read from across the room.
-	if m.mode == modeCalibrate {
+	// Each mode owns the whole screen. Panels beside panels is what the first
+	// version did, and it made every screen feel like a form.
+	var body string
+	switch m.mode {
+	case modeCalibrate:
 		return m.calibrateScreen()
+	case modeMove:
+		body = m.moveScreen()
+	default:
+		body = m.watchScreen()
 	}
-
-	cw := m.width - 34
-	if cw < 30 {
-		cw = 30
-	}
-	if cw > 78 {
-		cw = 78
-	}
-	ch := m.height - 10
-	if ch < 10 {
-		ch = 10
-	}
-	if ch > 24 {
-		ch = 24
-	}
-
-	c := newCanvas(cw, ch, m.snap.Room)
-	if m.mode == modeMove {
-		c.shadeQuality(m.nodePoints())
-	}
-	m.drawDevices(c)
-	m.drawNodes(c)
-
-	room := c.render()
-	side := m.sidebar()
-	body := lipgloss.JoinHorizontal(lipgloss.Top, room, "  ", side)
-
-	return "\n" + m.title() + "\n" + body + "\n" + m.footer() + "\n"
+	return "\n" + body + "\n" + m.footer()
 }
 
 func (m model) title() string {
@@ -589,18 +597,33 @@ func verdictPlain(nodes int, med float64) string {
 
 // footer offers only what is live right now. A key that does nothing is a key
 // you have to learn to ignore.
+// staleBanner is shown by the footer rather than the title, because the title
+// is now five rows of blocks and a warning has to sit where the eye returns.
+func (m model) staleBanner() string {
+	if m.lastErr == nil || m.lastOK.IsZero() {
+		return ""
+	}
+	t := breathe(float64(m.frame), 10)
+	st := lipgloss.NewStyle().Bold(true).Foreground(fade(cWarn, cBad, t))
+	return centreLine(st.Render(fmt.Sprintf("STALE — no answer for %s",
+		time.Since(m.lastOK).Round(time.Second))), m.width) + "\n"
+}
+
 func (m model) footer() string {
 	var keys []string
 	switch m.mode {
 	case modeWatch:
 		if len(m.nodes()) > 1 {
-			keys = append(keys, "tab next node")
+			keys = append(keys, "n next node")
 		}
 		if len(m.nodes()) > 0 {
 			keys = append(keys, "m move it")
 		}
+		if len(m.snap.Devices) > 1 {
+			keys = append(keys, "tab next device")
+		}
 		if len(m.snap.Devices) > 0 {
-			keys = append(keys, "c measure a device")
+			keys = append(keys, "c measure")
 		}
 		keys = append(keys, "q quit")
 	case modeMove:
@@ -615,7 +638,7 @@ func (m model) footer() string {
 			keys = []string{"enter start", "tab other device", "esc cancel"}
 		}
 	}
-	return " " + dim.Render(strings.Join(keys, "   ·   "))
+	return m.staleBanner() + centreLine(stFaint.Render(strings.Join(keys, "    ")), m.width)
 }
 
 // multiline styles each line separately. Styling a whole block pads every line
