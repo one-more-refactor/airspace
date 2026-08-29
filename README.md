@@ -17,6 +17,10 @@ airspace: http://127.0.0.1:9970
 Open it and you get the room: every device audible right now, how far away it
 probably is, and what it announced about itself while announcing its presence.
 
+Where this is going — an allowlist instead of a capture of the whole building,
+a TUI instead of a web page, and real calibration instead of textbook constants
+— is in [ROADMAP.md](ROADMAP.md).
+
 ## Direction, honestly
 
 **One antenna cannot hear a bearing.** It hears a signal strength, which is a
