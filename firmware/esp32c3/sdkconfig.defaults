@@ -1,0 +1,33 @@
+# Single core, two radios. Coexistence is the entire reason this firmware is
+# ESP-IDF rather than something friendlier to write.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+# The NimBLE roles are left at their defaults on purpose, after trying twice
+# not to. An observer-only build does not compile — ble_gap.c calls
+# ble_gap_adv_active_instance() while only declaring it for advertisers — and
+# turning the broadcaster back on without the peripheral fails differently, on
+# ble_adv_reattempt. These combinations are not all tested upstream and this
+# firmware is not the place to fix NimBLE.
+#
+# So the advertising and connection code is compiled in and never called. The
+# firmware only ever passive-scans. That is a statement about behaviour, not
+# about what the image contains, and the difference matters if you are
+# reasoning about what a board on a shelf can emit.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+
+# The board sits on a shelf with no console attached; a watchdog reboot is
+# better than a silent ear.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Build for size, not for stepping through in a debugger. The default -Og costs
+# a few hundred kilobytes for the convenience of a board that will spend its
+# life on a shelf with no console attached.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096

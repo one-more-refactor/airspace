@@ -1,0 +1,38 @@
+menu "airspace ear"
+
+config AIRSPACE_WIFI_SSID
+    string "Wi-Fi SSID"
+    default "changeme"
+
+config AIRSPACE_WIFI_PASSWORD
+    string "Wi-Fi password"
+    default "changeme"
+
+config AIRSPACE_COLLECTOR_URL
+    string "Collector ingest URL"
+    default "http://192.168.1.230:9970/ingest"
+    help
+      Plain HTTP on purpose: this is for a LAN or a tailnet. The token is not
+      a substitute for a network you already trust.
+
+config AIRSPACE_TOKEN
+    string "Shared ingest token"
+    default ""
+    help
+      Must match [collector].token in the collector's config.toml. The
+      collector answers 404 — not 401 — to a wrong token, so that a stranger
+      probing the port cannot tell a bad secret from a bad path.
+
+config AIRSPACE_NODE_NAME
+    string "Node name shown on the map"
+    default "ear1"
+
+config AIRSPACE_NODE_X
+    string "Node X position, metres from the room's top-left corner"
+    default "8.0"
+
+config AIRSPACE_NODE_Y
+    string "Node Y position, metres from the room's top-left corner"
+    default "2.0"
+
+endmenu

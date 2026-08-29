@@ -1,0 +1,8 @@
+# The default single-factory layout gives an app 1 MB, and this firmware is
+# 1.12 MB — a Wi-Fi stack, a Bluetooth host and an HTTP client is simply more
+# than a megabyte. The board has 4 MB, so the app gets 2 MB and there is room
+# to grow into rather than a second round of this.
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x6000
+phy_init,   data, phy,     0xf000,   0x1000
+factory,    app,  factory, 0x10000,  0x200000
