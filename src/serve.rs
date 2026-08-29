@@ -42,6 +42,8 @@ pub async fn serve(state: State, bind: &str) -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = listen_locally(&state).await {
                 eprintln!("local radio stopped: {e}");
+                // Exit rather than serve an empty map from a live process.
+                std::process::exit(1);
             }
         });
     }
@@ -60,15 +62,41 @@ pub async fn serve(state: State, bind: &str) -> Result<()> {
 }
 
 /// Sweep the local adapter forever, into shared state.
+///
+/// The error handling here is deliberate and was learned the hard way. This
+/// loop used to read `if let Ok(obs) = radio.sweep().await`, which swallows a
+/// dead D-Bus connection silently: the process stays up, systemd sees a healthy
+/// unit, the page keeps rendering, and it shows an empty room forever. A
+/// listening tool that has gone deaf must not look identical to a quiet room.
+///
+/// So failures are counted and reported, and a run of them ends the task —
+/// which ends the process, which makes systemd restart it into a working
+/// state. Crashing loudly beats serving a confident lie.
+const GIVE_UP_AFTER: u32 = 10;
+
 pub async fn listen_locally(state: &State) -> Result<()> {
     let radio = Listener::new().await?;
     radio.start().await?;
     let node = state.config.node.clone();
+    let mut failures: u32 = 0;
     loop {
         tokio::time::sleep(crate::observe::SWEEP).await;
-        radio.keep_alive().await;
-        if let Ok(obs) = radio.sweep().await {
-            state.ingest(&node, &obs);
+        let _ = radio.keep_alive().await;
+        match radio.sweep().await {
+            Ok(obs) => {
+                if failures > 0 {
+                    eprintln!("radio recovered after {failures} failed sweeps");
+                    failures = 0;
+                }
+                state.ingest(&node, &obs);
+            }
+            Err(e) => {
+                failures += 1;
+                eprintln!("sweep failed ({failures}/{GIVE_UP_AFTER}): {e}");
+                if failures >= GIVE_UP_AFTER {
+                    anyhow::bail!("radio unreadable after {GIVE_UP_AFTER} attempts; exiting so it can be restarted");
+                }
+            }
         }
     }
 }
@@ -88,7 +116,7 @@ pub async fn feed(state: State, url: &str, token: &str) -> Result<()> {
 
     loop {
         tokio::time::sleep(crate::observe::SWEEP).await;
-        radio.keep_alive().await;
+        let _ = radio.keep_alive().await;
         let obs = radio.sweep().await.unwrap_or_default();
         if obs.is_empty() {
             continue;

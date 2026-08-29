@@ -143,9 +143,22 @@ impl Listener {
     /// Keep discovery alive. It stops on its own across a suspend/resume, and
     /// a listener that has silently gone deaf still writes a file, which is the
     /// worst possible failure for a tool whose output is "nothing was there".
-    pub async fn keep_alive(&self) {
-        if !self.adapter.discovering().await.unwrap_or(false) {
-            let _ = self.adapter.start_discovery().await;
+    /// Returns whether discovery is running. A caller that ignores this is
+    /// choosing to keep listening to a radio that is not scanning.
+    pub async fn keep_alive(&self) -> bool {
+        match self.adapter.discovering().await {
+            Ok(true) => true,
+            Ok(false) => match self.adapter.start_discovery().await {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("cannot start discovery: {e}");
+                    false
+                }
+            },
+            Err(e) => {
+                eprintln!("cannot read discovery state: {e}");
+                false
+            }
         }
     }
 }

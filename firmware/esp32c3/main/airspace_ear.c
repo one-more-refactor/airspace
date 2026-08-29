@@ -13,6 +13,9 @@
 // catch every advertisement, we are trying to keep an association up while
 // catching most of them.
 
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -81,10 +84,17 @@ static void copy_name(char *dst, size_t cap, const uint8_t *src, uint8_t len)
 
 static void parse_adv(device_t *d, const uint8_t *data, uint8_t len)
 {
-    uint8_t i = 0;
+    // Not uint8_t: `i += flen + 1` on a uint8_t wraps for a large enough field
+    // and walks the loop backwards forever.
+    size_t i = 0;
     while (i + 1 < len) {
         uint8_t flen = data[i];
-        if (flen == 0 || i + flen >= len + 1) {
+        // A field occupies data[i] (the length) then flen octets, so the last
+        // byte touched is data[i + flen] and it has to be inside the buffer.
+        // The obvious `i + flen >= len + 1` permits i + flen == len, which
+        // reads one octet past the end — of a buffer filled by whoever is
+        // transmitting nearby.
+        if (flen == 0 || i + flen >= len) {
             return;
         }
         uint8_t type = data[i + 1];
@@ -266,57 +276,98 @@ static void clock_start(void)
 
 static char s_body[16384];
 
+// snprintf returns what it WOULD have written, not what it did. The obvious
+// accumulator —
+//
+//     n += snprintf(buf + n, sizeof(buf) - n, ...);
+//
+// therefore lets n grow past the size of the buffer on the first truncation.
+// After that, `sizeof(buf) - n` underflows (it is size_t, so it becomes about
+// 1.8e19) and `buf + n` points past the end: the next call writes out of
+// bounds with an effectively unbounded limit. It is the standard way this
+// idiom fails and it does not announce itself.
+//
+// This clamps instead, and reports truncation so the caller can stop rather
+// than silently emit half a JSON document.
+static bool append(char *buf, size_t cap, size_t *n, const char *fmt, ...)
+{
+    if (*n >= cap) {
+        return false;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int wrote = vsnprintf(buf + *n, cap - *n, fmt, ap);
+    va_end(ap);
+    if (wrote < 0) {
+        return false;
+    }
+    if ((size_t)wrote >= cap - *n) {
+        *n = cap;          // full; nothing more will fit
+        return false;
+    }
+    *n += (size_t)wrote;
+    return true;
+}
+
 static size_t build_batch(void)
 {
     time_t now = time(NULL);
     size_t n = 0;
-    n += snprintf(s_body + n, sizeof(s_body) - n,
-                  "{\"node\":{\"name\":\"%s\",\"x\":%s,\"y\":%s},\"obs\":[",
-                  CONFIG_AIRSPACE_NODE_NAME, CONFIG_AIRSPACE_NODE_X, CONFIG_AIRSPACE_NODE_Y);
+    append(s_body, sizeof(s_body), &n,
+           "{\"node\":{\"name\":\"%s\",\"x\":%s,\"y\":%s},\"obs\":[",
+           CONFIG_AIRSPACE_NODE_NAME, CONFIG_AIRSPACE_NODE_X, CONFIG_AIRSPACE_NODE_Y);
 
     bool first = true;
+    bool full = false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    for (int i = 0; i < MAX_DEVICES; i++) {
+    for (int i = 0; i < MAX_DEVICES && !full; i++) {
         device_t *d = &s_devices[i];
         if (!d->seen) {
             continue;
         }
-        if (n > sizeof(s_body) - 512) {
+        // Leave room for the closing "]}" whatever happens.
+        if (n + 512 > sizeof(s_body)) {
             break;
         }
         // BlueZ prints addresses most-significant octet first; the controller
         // hands them over the other way round. Getting this backwards produces
         // a device that never matches the same device seen by another node.
-        n += snprintf(s_body + n, sizeof(s_body) - n,
-                      "%s{\"t\":%lld,\"addr\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
-                      "\"at\":\"%s\",\"rssi\":%d,\"src\":\"ble\"",
-                      first ? "" : ",", (long long)now,
-                      d->addr[5], d->addr[4], d->addr[3], d->addr[2], d->addr[1], d->addr[0],
-                      (d->addr_type == BLE_ADDR_PUBLIC) ? "public" : "random", d->rssi);
+        full |= !append(s_body, sizeof(s_body), &n,
+                        "%s{\"t\":%lld,\"addr\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+                        "\"at\":\"%s\",\"rssi\":%d,\"src\":\"ble\"",
+                        first ? "" : ",", (long long)now,
+                        d->addr[5], d->addr[4], d->addr[3], d->addr[2], d->addr[1], d->addr[0],
+                        (d->addr_type == BLE_ADDR_PUBLIC) ? "public" : "random", d->rssi);
         first = false;
 
         if (d->name[0]) {
-            n += snprintf(s_body + n, sizeof(s_body) - n, ",\"name\":\"%s\"", d->name);
+            full |= !append(s_body, sizeof(s_body), &n, ",\"name\":\"%s\"", d->name);
         }
         if (d->has_tx) {
-            n += snprintf(s_body + n, sizeof(s_body) - n, ",\"tx_power\":%d", d->tx_power);
+            full |= !append(s_body, sizeof(s_body), &n, ",\"tx_power\":%d", d->tx_power);
         }
         if (d->has_flags) {
-            n += snprintf(s_body + n, sizeof(s_body) - n, ",\"flags\":%u", d->flags);
+            full |= !append(s_body, sizeof(s_body), &n, ",\"flags\":%u", d->flags);
         }
         if (d->has_company) {
-            n += snprintf(s_body + n, sizeof(s_body) - n, ",\"company\":[%u]", d->company);
+            full |= !append(s_body, sizeof(s_body), &n, ",\"company\":[%u]", d->company);
             if (d->has_msg) {
-                n += snprintf(s_body + n, sizeof(s_body) - n, ",\"cmsg\":[[%u,%u]]",
-                              d->company, d->msg);
+                full |= !append(s_body, sizeof(s_body), &n, ",\"cmsg\":[[%u,%u]]",
+                                d->company, d->msg);
             }
         }
-        n += snprintf(s_body + n, sizeof(s_body) - n, "}");
+        full |= !append(s_body, sizeof(s_body), &n, "}");
         d->seen = false; // one sweep, one report
     }
     xSemaphoreGive(s_lock);
 
-    n += snprintf(s_body + n, sizeof(s_body) - n, "]}");
+    // If anything was truncated the document is not valid JSON and the
+    // collector would reject the whole batch anyway. Drop it and say so rather
+    // than post something malformed every two seconds.
+    if (full || !append(s_body, sizeof(s_body), &n, "]}")) {
+        ESP_LOGW(TAG, "batch did not fit; dropping this sweep");
+        return 0;
+    }
     return first ? 0 : n; // nothing heard is not worth a request
 }
 

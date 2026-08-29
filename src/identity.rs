@@ -203,6 +203,25 @@ mod tests {
     }
 
     #[test]
+    fn address_and_key_parsing_never_panics() {
+        // These take strings from a config file a human edits, which is its own
+        // kind of hostile input.
+        for s in [
+            "", ":", "::::::", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ", "1:2:3:4:5:6",
+            "EC:00:00:00:00:01:00", "-1:00:00:00:00:00",
+            &"f".repeat(1000), &"0".repeat(31), &"0".repeat(33),
+        ] {
+            let _ = parse_addr(s);
+            let _ = parse_hex16(s);
+            let _ = whose(&[], s);
+        }
+        // A key of the wrong length must never be silently padded into a
+        // working key — that would resolve nothing and look like bad hardware.
+        assert!(parse_hex16(&"0".repeat(31)).is_none());
+        assert!(parse_hex16(&"0".repeat(33)).is_none());
+    }
+
+    #[test]
     fn parses_what_bluez_writes() {
         // BlueZ writes the key as unbroken uppercase hex.
         assert!(parse_hex16("EC0234A357C8AD05341010A60A397D9B").is_some());
