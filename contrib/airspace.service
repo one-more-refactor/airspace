@@ -1,0 +1,33 @@
+[Unit]
+Description=airspace — passive radio observatory (collector)
+Documentation=https://github.com/one-more-refactor/airspace
+# Bluetooth only. The Wi-Fi ear is a separate unit precisely because it needs a
+# capability this one does not.
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/airspace serve 127.0.0.1:9970
+Restart=on-failure
+RestartSec=3
+
+# It reads one D-Bus service and serves one loopback port. Nothing it does
+# needs a filesystem it can write to, a new privilege, or a second address
+# family — so it gets none of them.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=default.target
