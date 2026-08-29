@@ -221,7 +221,7 @@ async fn whoami(secs: u64) -> Result<()> {
 
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(observe::SWEEP).await;
-        radio.keep_alive().await;
+        let _ = radio.keep_alive().await;
         for o in radio.sweep().await.unwrap_or_default() {
             // Only resolvable private addresses are even eligible.
             if identity::parse_addr(&o.addr).is_some_and(|a| a[0] & 0xc0 == 0x40) {

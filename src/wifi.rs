@@ -411,6 +411,61 @@ mod tests {
         assert!(o.doing.unwrap().contains("channel 6"));
     }
 
+    /// A deterministic pseudo-random generator, so a failure is reproducible
+    /// rather than "it panicked once on a Tuesday".
+    fn xorshift(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    #[test]
+    fn survives_arbitrary_rubbish() {
+        // Every byte this function sees was put on the air by someone else, so
+        // "it panics on a malformed frame" is a denial of service that anyone
+        // within radio range can trigger. Structured fuzzing is better than
+        // this; no fuzzing at all is much worse.
+        let mut st = 0x2545F4914F6CDD1Du64;
+        for _ in 0..200_000 {
+            let len = (xorshift(&mut st) % 300) as usize;
+            let mut buf = vec![0u8; len];
+            for b in buf.iter_mut() {
+                *b = (xorshift(&mut st) & 0xff) as u8;
+            }
+            let _ = parse(&buf);
+        }
+    }
+
+    #[test]
+    fn survives_plausible_frames_with_lying_lengths() {
+        // Random bytes rarely get past the radiotap sanity checks. These are
+        // shaped like real frames but with hostile length fields — the case
+        // that actually reaches the parsing code.
+        let mut st = 0x9E3779B97F4A7C15u64;
+        for _ in 0..200_000 {
+            let mut buf = radiotap_header();
+            buf.push(0x40); // probe request
+            buf.push(0);
+            buf.extend_from_slice(&[0; 2]);
+            buf.extend_from_slice(&[0xff; 18]);
+            // A handful of information elements with lengths that overrun,
+            // claim zero, or point past the end.
+            for _ in 0..(xorshift(&mut st) % 6) {
+                buf.push((xorshift(&mut st) & 0xff) as u8);
+                buf.push((xorshift(&mut st) & 0xff) as u8);
+                buf.push((xorshift(&mut st) & 0xff) as u8);
+            }
+            // Corrupt the declared radiotap length too.
+            if xorshift(&mut st) % 4 == 0 {
+                let n = (xorshift(&mut st) & 0xffff) as u16;
+                buf[2] = n as u8;
+                buf[3] = (n >> 8) as u8;
+            }
+            let _ = parse(&buf);
+        }
+    }
+
     #[test]
     fn refuses_a_truncated_frame() {
         assert!(parse(&radiotap_header()).is_none());
