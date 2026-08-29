@@ -26,6 +26,10 @@ pub struct Config {
     pub room: Room,
     pub node: Node,
     pub collector: Collector,
+    /// Devices you hold the identity key for, so their rotating addresses can
+    /// be recognised as one thing. Written as repeated [[identity]] blocks.
+    #[serde(default, rename = "identity")]
+    pub identities: Vec<crate::identity::Identity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,7 +80,12 @@ impl Default for Collector {
 }
 impl Default for Config {
     fn default() -> Self {
-        Config { room: Room::default(), node: Node::default(), collector: Collector::default() }
+        Config {
+            room: Room::default(),
+            node: Node::default(),
+            collector: Collector::default(),
+            identities: Vec::new(),
+        }
     }
 }
 
@@ -273,9 +282,21 @@ impl State {
 
             let v = o.company.iter().find_map(|c| vendor(*c)).map(str::to_string);
             leaks.extend(kind);
+
+            // A device we hold the key for is not "unnamed Apple device" — it
+            // is a thing with a name, however many times it has changed its
+            // address since we last looked.
+            let known = crate::identity::whose(&self.config.identities, addr);
+            if known.is_some() {
+                leaks.push(
+                    "address resolved with its identity key — rotation does not hide this device \
+                     from anyone holding that key"
+                        .into(),
+                );
+            }
             devices.push(Live {
                 id: addr.clone(),
-                label: o.name.clone().unwrap_or_else(|| match &v {
+                label: known.clone().or_else(|| o.name.clone()).unwrap_or_else(|| match &v {
                     Some(v) => format!("unnamed {v} device"),
                     None => "unnamed device".into(),
                 }),

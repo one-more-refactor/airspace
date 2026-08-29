@@ -8,6 +8,7 @@
 //! effort and no special hardware, then it is the floor, not the ceiling.
 
 mod analyse;
+mod identity;
 mod model;
 mod observe;
 mod report;
@@ -35,6 +36,8 @@ USAGE:
     airspace watch [SECONDS]     listen and append to the capture (default: until Ctrl-C)
     airspace report [OUT.html]   render the capture as a page (default: airspace.html)
     airspace doctor              what this machine\'s radios can and cannot hear
+    airspace whoami [SECONDS]    watch for addresses that resolve to a configured
+                                 identity — the check that a key actually works
 
     Room size and this node\'s position live in ~/.config/airspace/config.toml.
 
@@ -102,6 +105,10 @@ async fn main() -> Result<()> {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("airspace.html"));
             render(&capture, &out)
+        }
+        "whoami" => {
+            let secs = positional.first().and_then(|s| s.parse::<u64>().ok()).unwrap_or(60);
+            whoami(secs).await
         }
         "doctor" => doctor().await,
         _ => {
@@ -183,6 +190,83 @@ async fn init_wifi(cfg: space::Config, iface: &str, url: &str, token: &str) -> R
             }
         }
     }
+}
+
+/// Watch for addresses that resolve to a configured identity.
+///
+/// This exists because an identity key that does not work fails silently: the
+/// device simply never appears, which is indistinguishable from it being
+/// switched off. A phone rotates its address every fifteen minutes or so, so
+/// give this a minute and expect one or two hits, not a stream.
+async fn whoami(secs: u64) -> Result<()> {
+    let cfg = space::Config::load()?;
+    if cfg.identities.is_empty() {
+        anyhow::bail!(
+            "no [[identity]] blocks in {} — add a name and the IRK from the device's bond file",
+            space::Config::path().display()
+        );
+    }
+    for id in &cfg.identities {
+        match id.key() {
+            Some(_) => eprintln!("watching for {:?}", id.name),
+            None => eprintln!("{:?}: the irk is not 32 hex characters", id.name),
+        }
+    }
+
+    let radio = observe::Listener::new().await?;
+    radio.start().await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut candidates = 0usize;
+
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(observe::SWEEP).await;
+        radio.keep_alive().await;
+        for o in radio.sweep().await.unwrap_or_default() {
+            // Only resolvable private addresses are even eligible.
+            if identity::parse_addr(&o.addr).is_some_and(|a| a[0] & 0xc0 == 0x40) {
+                candidates += 1;
+            }
+            // Try the key as written AND byte-reversed. BlueZ's info file and
+            // the specification's notation disagree about order, and which one
+            // a given stack wrote is not knowable from the hex alone — so this
+            // reports which orientation matched rather than guessing.
+            if let Some(bytes) = identity::parse_addr(&o.addr) {
+                for id in &cfg.identities {
+                    let Some(k) = id.key() else { continue };
+                    let mut rev = k;
+                    rev.reverse();
+                    let hit = if identity::resolves(&k, &bytes) {
+                        Some("as-written")
+                    } else if identity::resolves(&rev, &bytes) {
+                        Some("byte-reversed")
+                    } else {
+                        None
+                    };
+                    if let Some(order) = hit {
+                        if seen.insert(o.addr.clone(), id.name.clone()).is_none() {
+                            println!("{}  ->  {}   [key {order}]   ({} dBm)",
+                                     o.addr, id.name, o.rssi.unwrap_or(0));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    println!();
+    if seen.is_empty() {
+        println!(
+            "No address resolved, out of {candidates} resolvable-private ones seen.\n\
+             Either the device was not advertising, or the key is not the right key —\n\
+             a bond that only produced a [LinkKey] and no [IdentityResolvingKey] gives\n\
+             you a classic-bluetooth bond that cannot resolve anything."
+        );
+    } else {
+        println!("{} address(es) resolved to {} identity(ies).", seen.len(), 
+                 seen.values().collect::<std::collections::HashSet<_>>().len());
+    }
+    Ok(())
 }
 
 fn capture_path(args: &[String]) -> PathBuf {
