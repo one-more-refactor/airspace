@@ -64,6 +64,15 @@ type model struct {
 	calStatus  string
 	calFitted  *fitResult
 
+	// The run: started by one keypress and then hands-free, because the
+	// person being measured is across the room holding the device.
+	calRun        bool
+	calDeadline   time.Time // when this station's reading is taken
+	calFlashUntil time.Time // non-zero while showing a capture
+	calFrame      int       // animation clock
+	calWindow     []int     // readings gathered just before the buzzer
+	calNote       string
+
 	width, height int
 }
 
@@ -131,7 +140,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastErr = msg.err
 		} else {
 			m.snap, m.lastErr, m.lastOK = msg.snap, nil, time.Now()
+			// Gather readings in the seconds before the buzzer so the sample
+			// is a median rather than whichever advertisement landed last.
+			if m.calRun && m.calFlashUntil.IsZero() &&
+				time.Until(m.calDeadline) <= calSettleWindow {
+				if ns := m.nodes(); len(ns) > 0 && m.sel < len(ns) {
+					if r, ok := m.rssiFor(m.calDevice, ns[m.sel].Name); ok {
+						m.calWindow = append(m.calWindow, r)
+					}
+				}
+			}
 		}
+
+	case frameMsg:
+		if m.mode != modeCalibrate {
+			return m, nil
+		}
+		m.calFrame++
+		if !m.calRun {
+			return m, frame()
+		}
+		now := time.Time(msg)
+		switch {
+		case !m.calFlashUntil.IsZero():
+			if now.After(m.calFlashUntil) {
+				m.calFlashUntil = time.Time{}
+				m.calStage++
+				if m.calStage >= len(calDistances) {
+					m.calRun = false
+					samples, api := m.calSamples, m.api
+					return m, tea.Batch(frame(), func() tea.Msg {
+						r, err := api.fit(samples)
+						return fitMsg{r, err}
+					})
+				}
+				m.calDeadline, m.calWindow = now.Add(calStationFor), nil
+			}
+		case !now.Before(m.calDeadline):
+			m = m.captureStation()
+			m.calFlashUntil = now.Add(calFlashFor)
+		}
+		return m, frame()
 
 	case fitMsg:
 		if msg.err != nil {
@@ -170,7 +219,7 @@ func (m model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			delete(m.moved, ns[m.sel].Name)
 		}
 		m.mode = modeWatch
-		m.calStatus = ""
+		m.calStatus, m.calRun, m.calNote = "", false, ""
 		return m, nil
 	}
 
@@ -190,6 +239,8 @@ func (m model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.mode = modeCalibrate
 				m.calDevice, m.calStage, m.calSamples = m.snap.Devices[0].Label, 0, nil
 				m.calFitted, m.calStatus = nil, ""
+				m.calRun, m.calNote, m.calFrame = false, "", 0
+				return m, frame()
 			}
 		}
 
@@ -238,7 +289,8 @@ func (m model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modeCalibrate:
 		switch msg.String() {
 		case "tab":
-			if m.snap != nil && len(m.snap.Devices) > 0 {
+			// Changing device mid-run would mix two devices into one fit.
+			if !m.calRun && m.snap != nil && len(m.snap.Devices) > 0 {
 				for i, d := range m.snap.Devices {
 					if d.Label == m.calDevice {
 						m.calDevice = m.snap.Devices[(i+1)%len(m.snap.Devices)].Label
@@ -248,34 +300,47 @@ func (m model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "enter", " ":
-			return m.takeSample()
+			// The only keypress of the whole run.
+			if m.calFitted == nil && !m.calRun {
+				m.calRun = true
+				m.calStage, m.calSamples = 0, nil
+				m.calWindow, m.calNote = nil, ""
+				m.calFlashUntil = time.Time{}
+				m.calDeadline = time.Now().Add(calStationFor)
+				return m, frame()
+			}
 		}
 	}
 	return m, nil
 }
 
-func (m model) takeSample() (tea.Model, tea.Cmd) {
+// captureStation records the reading for the station just finished. A station
+// the node simply could not hear is skipped and said so rather than aborting
+// the run — being unable to hear it from eight metres is itself a result, and
+// the fit only needs two points.
+func (m model) captureStation() model {
 	if m.calStage >= len(calDistances) {
-		return m, nil
+		return m
 	}
 	ns := m.nodes()
-	if len(ns) == 0 {
-		return m, nil
+	if len(ns) == 0 || m.sel >= len(ns) {
+		m.calNote = "no node selected"
+		return m
 	}
-	rssi, ok := m.rssiFor(m.calDevice, ns[m.sel].Name)
+	rssi, ok := 0, false
+	if len(m.calWindow) > 0 {
+		rssi, ok = medianInt(m.calWindow), true
+	} else if r, o := m.rssiFor(m.calDevice, ns[m.sel].Name); o {
+		rssi, ok = r, true
+	}
 	if !ok {
-		m.calStatus = "that node cannot hear it from where you are standing — " +
-			"which is itself worth knowing"
-		return m, nil
+		m.calNote = fmt.Sprintf("%s could not hear it at %.0f m — skipping that one",
+			ns[m.sel].Name, calDistances[m.calStage])
+		return m
 	}
 	m.calSamples = append(m.calSamples, [2]float64{calDistances[m.calStage], float64(rssi)})
-	m.calStage++
-	m.calStatus = ""
-	if m.calStage == len(calDistances) {
-		samples, api := m.calSamples, m.api
-		return m, func() tea.Msg { r, err := api.fit(samples); return fitMsg{r, err} }
-	}
-	return m, nil
+	m.calNote = ""
+	return m
 }
 
 func (m model) rssiFor(device, node string) (int, bool) {
@@ -315,6 +380,13 @@ func (m model) View() string {
 				dim.Render("Is it running?  systemctl --user status airspace") + "\n"
 		}
 		return "\n  " + dim.Render("Listening…") + "\n"
+	}
+
+	// Measuring takes the whole screen: for those forty seconds it is the only
+	// thing happening, and a countdown tucked in a sidebar is one you cannot
+	// read from across the room.
+	if m.mode == modeCalibrate {
+		return m.calibrateScreen()
 	}
 
 	cw := m.width - 34
@@ -534,10 +606,13 @@ func (m model) footer() string {
 	case modeMove:
 		keys = []string{"←↑↓→ move", "s best spot", "enter place it", "esc cancel"}
 	case modeCalibrate:
-		if m.calFitted != nil {
+		switch {
+		case m.calFitted != nil:
 			keys = []string{"esc done"}
-		} else {
-			keys = []string{"enter take reading", "tab other device", "esc cancel"}
+		case m.calRun:
+			keys = []string{"esc stop"}
+		default:
+			keys = []string{"enter start", "tab other device", "esc cancel"}
 		}
 	}
 	return " " + dim.Render(strings.Join(keys, "   ·   "))
