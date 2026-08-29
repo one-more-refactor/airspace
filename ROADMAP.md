@@ -30,11 +30,11 @@ Three consequences worth stating plainly:
   was near you, and the README has to tell people to delete it. With an
   allowlist there is nothing to delete: unrecognised devices are never written
   down. The tool stops being something that needs an apology.
-* **It requires identity resolution on the node.** You cannot allowlist a
-  rotating address by address. Each node needs the IRK and has to run the
-  resolution itself — the C3 has hardware AES, so this is cheap, but it means
-  key material on a board on a shelf. That is a real trade and the reason to
-  keep the keys to devices you own.
+* **It does NOT have to put keys on the nodes.** An earlier draft of this said
+  each node would need the IRK to allowlist a rotating address. That was the
+  wrong conclusion — see "Where the keys live" below. Resolution stays on the
+  collector; nodes send what they hear and the filtering happens where the
+  secret already is.
 
 The "look what leaks by accident" demonstration does not disappear — it becomes
 `airspace watch` and `airspace report`, an explicit mode you turn on to make a
@@ -52,10 +52,16 @@ multi-step wizards is genuinely better than ratatui's, and the config flow below
 is mostly a wizard. The cost is a second toolchain in the repo, which is worth
 naming and is the only real argument for staying in Rust.
 
-### The config flow is the interesting part
+### It is an operations console, not a setup wizard
 
-This is where a presence system is won or lost, because every hard problem in
-this project is a placement or calibration problem wearing a costume.
+A wizard runs once and lies forever afterwards. Calibration drifts: furniture
+moves, a door closes, a node gets nudged, a battery sags and the transmit power
+with it. The interesting version of this is a thing you leave open, that keeps
+measuring and tells you when the picture stopped being true.
+
+So: initial calibration and continuous calibration are the same code path, and
+the difference is only whether you are being prompted. Everything below runs
+live, all the time, and the setup flow is just the first five minutes of it.
 
 **Real calibration, not assumed constants.** Distance is currently a path-loss
 model with textbook numbers: −59 dBm at one metre, exponent 2.5. Both are
@@ -65,10 +71,23 @@ some distance that matters to you, and solve for the reference power and the
 exponent that fit *your* walls and *that* device. Store it per (node, device).
 This is the single change that would move distance from "a band" to "a number".
 
-**Measure the link, not just the radio.** Advertisements arrive at a rate; a
-badly placed node hears a fraction of them. Report packets per second and drop
-rate per node per device during setup, because "this node is in a bad spot" and
-"this node is fine" look identical in a static reading and obvious in a rate.
+**Measure the link continuously, not just at setup.** Advertisements arrive at
+a rate, and a badly placed node hears a fraction of them. Packets per second,
+inter-arrival gaps and drop rate per node per device — because "this node is in
+a bad spot", "this node has died" and "this node is fine" look identical in a
+static reading and are obvious in a rate.
+
+This is also the only honest health check the system can have. Everything that
+has gone wrong in this project so far — the beacon blind after suspend, the
+collector alive with a dead D-Bus connection, the firmware logging to pins with
+no cable on them — presented as *silence*, and silence is indistinguishable
+from a quiet room. A live rate display makes the failure visible without
+anybody having to suspect it first.
+
+**Debug the links, not just report them.** Which node last heard each device
+and how long ago; whether a node is reporting but hearing nothing; whether the
+collector is ingesting but the radio has stopped. Named states rather than an
+absence of rows.
 
 **Help place the nodes.** Two ears in a line give you almost nothing; two ears
 spread across the room give you intersecting rings. This has a real name —
@@ -96,6 +115,55 @@ is not available.
 
 Deliberately last. It is an export, and exports are easy once the thing being
 exported is correct.
+
+## Where the keys live
+
+Prompted by a good question: how does ESPHome handle this?
+
+**It does not, in the sense you would hope.** `secrets.yaml` is compile-time
+substitution — ESPHome replaces `!secret wifi_password` with the literal value
+when it builds, and the device only ever sees the substituted firmware. So
+`secrets.yaml` protects your git repository, not your device. The API
+encryption key is a 32-byte pre-shared key used with the Noise protocol to
+encrypt the device-to-Home-Assistant channel; that is transport security, and
+it says nothing about data at rest.
+
+ESPHome's own security guidance is candid about the consequence. It states that
+physical access to a device allows an attacker to "extract encryption keys and
+passwords from flash memory", and it offers no flash encryption or secure boot
+guidance at all. The threat model is explicitly a trusted network, and the
+mitigation for physical access is device placement. In short: **ESPHome's
+answer to a key on a shelf is "do not let anyone take the shelf".**
+
+ESP-IDF does offer more, and ESPHome simply does not turn it on: flash
+encryption (AES-XTS under a key burned into eFuse, so a serial dump yields
+ciphertext) and secure boot v2. Both are irreversible once burned and make
+development genuinely painful, which is why nobody defaults to them.
+
+### What this means here
+
+There are three options for an IRK on a node, and the third is best:
+
+1. **Accept it**, as ESPHome does. Physical security by placement.
+2. **Burn flash encryption.** Real protection, irreversible, every reflash gets
+   harder. Justified for a key that identifies a person, arguably.
+3. **Never put the key on the node.** The node reports what it hears; the
+   collector resolves. The secret stays on the machine that already has a
+   locked screen, a disk password and a threat model.
+
+Option 3 is what airspace does today, and the only reason the roadmap drifted
+away from it was the bandwidth argument for filtering at the node — which does
+not survive contact with the numbers. Unfiltered is about 112 bytes per sweep,
+and BLE 5 extended advertising carries roughly 250 bytes per PDU. It fits. The
+saving was never worth putting a key that identifies a person onto a board that
+lives on a shelf.
+
+If node-side filtering ever does become necessary, the version that does not
+leak the key is for the collector to push *the currently resolved address* to
+the nodes and let them filter on that until it rotates. That has a real
+bootstrapping hole — a device only a distant node can hear never gets resolved
+in the first place — which is exactly the kind of thing to find out by
+measuring rather than by arguing.
 
 ---
 
