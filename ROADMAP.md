@@ -1,7 +1,12 @@
 # Roadmap
 
-Where this is going, and why. Nothing here is built yet. It is written down so
-the decisions are arguable rather than implicit.
+Where this is going, and why.
+
+**Items 1, 2 and 3 are now built** — the allowlist, the console with live
+calibration and placement scoring, and in-ear gating. What remains below is the
+Home Assistant export, deliberately left until last, plus the notes on what was
+considered and rejected. Kept rather than deleted because the reasoning is the
+useful part.
 
 The short version of the shift: **airspace stops being a tool that watches the
 building and becomes a tool that tracks your own devices.** Those are different
@@ -10,7 +15,7 @@ better.
 
 ---
 
-## 1. Track only what you asked it to track
+## 1. Track only what you asked it to track — BUILT
 
 Today every advertiser in range is recorded — currently sixteen to twenty-one
 devices, almost all of them neighbours. For presence tracking that is not
@@ -40,7 +45,7 @@ The "look what leaks by accident" demonstration does not disappear — it become
 `airspace watch` and `airspace report`, an explicit mode you turn on to make a
 point, rather than what the tool does by default.
 
-## 2. A TUI, and the web page demoted
+## 2. A TUI, and the web page demoted — BUILT
 
 The web UI is a visualisation for one person on one machine. The product is a
 terminal interface.
@@ -95,7 +100,7 @@ geometric dilution of precision, borrowed from GPS — and it can be computed fo
 a candidate layout and shown as a score before anyone tapes anything to a shelf.
 Guiding placement is worth more than any amount of filtering afterwards.
 
-## 3. Trust in-ear state, and only measure when it is true
+## 3. Trust in-ear state, and only measure when it is true — BUILT
 
 An in-ear bud is not at a fixed position relative to its owner. In an ear, in a
 pocket, on a desk and in a case are four very different radio situations, and
@@ -106,7 +111,7 @@ it: measure when worn, ignore the reading otherwise, and say on screen which is
 happening. `vanish`'s beacon already gates on this for exactly this reason, and
 the same logic belongs here.
 
-## 4. Home Assistant, later
+## 4. Home Assistant, later — NOT BUILT
 
 One process holds the MQTT connection and publishes, with discovery messages so
 entities appear on their own. Default to the host PC because it is already

@@ -12,7 +12,7 @@
 //! This module holds the room, the nodes in it, and the shared live state the
 //! collector serves.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,13 +23,49 @@ use crate::model::{apple_message, microsoft_message, service_meaning, vendor, Ob
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    pub general: General,
     pub room: Room,
     pub node: Node,
     pub collector: Collector,
+    /// Fitted path-loss models, one per (node, device). Written by the console
+    /// during calibration; absent until something has actually been measured.
+    #[serde(default, rename = "calibration")]
+    pub calibrations: Vec<crate::model::Calibration>,
     /// Devices you hold the identity key for, so their rotating addresses can
     /// be recognised as one thing. Written as repeated [[identity]] blocks.
     #[serde(default, rename = "identity")]
     pub identities: Vec<crate::identity::Identity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct General {
+    /// Report only devices matching a configured identity.
+    ///
+    /// This is the difference between a presence system and a log of the
+    /// building. With it on, a stranger's device is dropped the moment it is
+    /// recognised as a stranger's, and never reaches state, the page or the
+    /// disk — so there is nothing to delete later and no policy to trust.
+    ///
+    /// Defaults to true, and does nothing at all until at least one identity
+    /// is configured: a fresh install with no identities would otherwise show
+    /// an empty screen and look broken.
+    pub track_only_known: bool,
+    /// Treat an earbud's readings as meaningful only while it is being worn.
+    ///
+    /// In an ear, in a pocket, on a desk and in a case are four different radio
+    /// situations, and averaging across them produces a distance that is wrong
+    /// in all four.
+    pub require_worn: bool,
+    /// How long an in-ear reading stays valid — long enough to take a bud out
+    /// for a conversation without the device vanishing from the map.
+    pub worn_memory_secs: u64,
+}
+
+impl Default for General {
+    fn default() -> Self {
+        General { track_only_known: true, require_worn: true, worn_memory_secs: 600 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,9 +117,11 @@ impl Default for Collector {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            general: General::default(),
             room: Room::default(),
             node: Node::default(),
             collector: Collector::default(),
+            calibrations: Vec::new(),
             identities: Vec::new(),
         }
     }
@@ -100,12 +138,38 @@ impl Config {
         base.join("airspace/config.toml")
     }
 
+    /// Where measured calibrations live.
+    ///
+    /// A separate file from the config on purpose. The console writes these and
+    /// the daemon only reads them, so the daemon never needs write access to
+    /// your home directory — its unit sets ProtectHome=read-only and that
+    /// stays true. It also means a rewritten calibration cannot clobber the
+    /// comments in a config file a human maintains.
+    pub fn calibration_path() -> std::path::PathBuf {
+        Self::path().with_file_name("calibration.toml")
+    }
+
     pub fn load() -> anyhow::Result<Config> {
-        match std::fs::read_to_string(Self::path()) {
-            Ok(s) => Ok(toml::from_str(&s)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(e) => Err(e.into()),
+        let mut cfg: Config = match std::fs::read_to_string(Self::path()) {
+            Ok(s) => toml::from_str(&s)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+            Err(e) => return Err(e.into()),
+        };
+        if let Ok(s) = std::fs::read_to_string(Self::calibration_path()) {
+            #[derive(serde::Deserialize)]
+            struct Cals {
+                #[serde(default, rename = "calibration")]
+                calibrations: Vec<crate::model::Calibration>,
+            }
+            let c: Cals = toml::from_str(&s)?;
+            // Measured beats configured: a later entry for the same pair wins,
+            // so recalibrating is just writing the file again.
+            for cal in c.calibrations {
+                cfg.calibrations.retain(|x| !(x.node == cal.node && x.device == cal.device));
+                cfg.calibrations.push(cal);
+            }
         }
+        Ok(cfg)
     }
 }
 
@@ -125,7 +189,17 @@ pub struct Heard {
     /// True when the distance used the power the device advertises rather than
     /// an assumed one. The UI says which, because they are not equally good.
     pub calibrated: bool,
+    /// How the distance was arrived at — measured here, from an advertised
+    /// transmit power, or from textbook constants.
+    pub basis: crate::model::Basis,
     pub age: u64,
+    /// Fraction of this node's recent sweeps in which the device appeared.
+    ///
+    /// Deliberately not called a packet rate. The collector sees sweeps, not
+    /// individual advertisements, so what it can honestly measure is how often
+    /// a device shows up when the node looks — which is the number that says
+    /// "this node is badly placed" and it says it clearly.
+    pub heard_ratio: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +213,14 @@ pub struct Live {
     pub heard: Vec<Heard>,
     pub first_seen: u64,
     pub paired: bool,
+    /// True when this device matched a configured identity.
+    pub known: bool,
+    /// Last reported in-ear state, and whether it counts as worn right now.
+    pub in_ear: Option<bool>,
+    pub worn: bool,
+    /// Set when the readings are being shown but should not be trusted for
+    /// position — an earbud out of an ear is the case that matters.
+    pub unreliable: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,7 +240,19 @@ struct Inner {
     meta: HashMap<String, Observation>,
     first: HashMap<String, u64>,
     nodes: HashMap<String, Node>,
+    /// When each node last delivered a sweep, most recent last. The
+    /// denominator of the heard ratio.
+    sweeps: HashMap<String, VecDeque<u64>>,
+    /// When each (address, node) pair was present in one of those sweeps.
+    seen_in: HashMap<(String, String), VecDeque<u64>>,
+    /// When each address was last reported as being in an ear.
+    worn_at: HashMap<String, u64>,
 }
+
+/// The window over which the heard ratio is computed. Long enough that a
+/// single missed sweep is not alarming, short enough to notice a node that has
+/// just been moved behind a fridge.
+const RATIO_WINDOW: u64 = 60;
 
 #[derive(Clone)]
 pub struct State {
@@ -178,9 +272,38 @@ impl State {
     }
 
     pub fn ingest(&self, node: &Node, obs: &[Observation]) {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let mut i = self.inner.lock().unwrap();
         i.nodes.insert(node.name.clone(), node.clone());
+
+        // One sweep from this node, whatever it contained. Recorded before the
+        // observations so that a node reporting nothing still counts as having
+        // looked — "heard nothing" and "stopped reporting" are different
+        // failures and must not look alike.
+        let sweeps = i.sweeps.entry(node.name.clone()).or_default();
+        sweeps.push_back(now);
+        while sweeps.front().is_some_and(|t| now.saturating_sub(*t) > RATIO_WINDOW) {
+            sweeps.pop_front();
+        }
+
         for o in obs {
+            // Drop a stranger here, before it reaches state, the page or the
+            // disk. Filtering later would still mean having written it down.
+            if self.config.general.track_only_known
+                && !self.config.identities.is_empty()
+                && crate::identity::whose(&self.config.identities, &o.addr).is_none()
+            {
+                continue;
+            }
+            let key = (o.addr.clone(), node.name.clone());
+            let seen = i.seen_in.entry(key).or_default();
+            seen.push_back(now);
+            while seen.front().is_some_and(|t| now.saturating_sub(*t) > RATIO_WINDOW) {
+                seen.pop_front();
+            }
+            if o.in_ear == Some(true) {
+                i.worn_at.insert(o.addr.clone(), now);
+            }
             let Some(rssi) = o.rssi else { continue };
             i.heard
                 .entry(o.addr.clone())
@@ -222,14 +345,48 @@ impl State {
                 .filter(|(_, (_, t))| now.saturating_sub(*t) <= STALE)
                 .map(|(n, (r, t))| {
                     let m = i.meta.get(addr);
-                    let (metres, calibrated) = match m.map(|o| o.src.as_str()) {
-                        // Wi-Fi is a different radio problem and gets its own
-                        // constants; sharing them would put every laptop in the
-                        // building on the far side of the street.
-                        Some("wifi") => (crate::model::wifi_metres(*r), false),
-                        _ => crate::model::metres_with_tx(*r, m.and_then(|o| o.tx_power)),
+                    let who = crate::identity::whose(&self.config.identities, addr);
+                    // A model fitted in this room for this pair beats one
+                    // derived from an advertised power, which beats a textbook
+                    // constant. Take the best available and say which it was.
+                    let cal = who.as_ref().and_then(|w| {
+                        self.config
+                            .calibrations
+                            .iter()
+                            .find(|c| &c.node == n && &c.device == w)
+                    });
+                    let (metres, calibrated, basis) = match (cal, m.map(|o| o.src.as_str())) {
+                        (Some(c), _) => (c.metres(*r), true, crate::model::Basis::Measured),
+                        (None, Some("wifi")) => {
+                            (crate::model::wifi_metres(*r), false, crate::model::Basis::Assumed)
+                        }
+                        (None, _) => {
+                            let (d, c) = crate::model::metres_with_tx(*r, m.and_then(|o| o.tx_power));
+                            let b = if c {
+                                crate::model::Basis::Advertised
+                            } else {
+                                crate::model::Basis::Assumed
+                            };
+                            (d, c, b)
+                        }
                     };
-                    Heard { node: n.clone(), rssi: *r, metres, calibrated, age: now.saturating_sub(*t) }
+                    let sweeps = i.sweeps.get(n).map(|v| v.len()).unwrap_or(0);
+                    let hits = i
+                        .seen_in
+                        .get(&(addr.clone(), n.clone()))
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    let heard_ratio =
+                        if sweeps == 0 { 0.0 } else { (hits as f32 / sweeps as f32).min(1.0) };
+                    Heard {
+                        node: n.clone(),
+                        rssi: *r,
+                        metres,
+                        calibrated,
+                        basis,
+                        age: now.saturating_sub(*t),
+                        heard_ratio,
+                    }
                 })
                 .collect();
             if heard.is_empty() {
@@ -287,6 +444,23 @@ impl State {
             // is a thing with a name, however many times it has changed its
             // address since we last looked.
             let known = crate::identity::whose(&self.config.identities, addr);
+
+            // Worn state, with a memory: a bud taken out for a conversation
+            // should not make the device disappear from the map.
+            let worn = i
+                .worn_at
+                .get(addr)
+                .is_some_and(|t| now.saturating_sub(*t) < self.config.general.worn_memory_secs);
+            let reports_ear = o.in_ear.is_some();
+            let unreliable = if self.config.general.require_worn && reports_ear && !worn {
+                Some(
+                    "not being worn — an earbud on a desk or in a pocket is a different \
+                     radio problem, so this distance is not comparable"
+                        .to_string(),
+                )
+            } else {
+                None
+            };
             if known.is_some() {
                 leaks.push(
                     "address resolved with its identity key — rotation does not hide this device \
@@ -307,6 +481,10 @@ impl State {
                 heard,
                 first_seen: i.first.get(addr).copied().unwrap_or(now),
                 paired: o.paired,
+                known: known.is_some(),
+                in_ear: o.in_ear,
+                worn,
+                unreliable,
             });
         }
 
@@ -351,6 +529,7 @@ mod tests {
             flags: None,
             src: "ble".into(),
             doing: None,
+            in_ear: None,
         }
     }
 

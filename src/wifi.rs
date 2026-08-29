@@ -306,6 +306,7 @@ impl Frame {
             icon: None,
             modalias: None,
             flags: None,
+            in_ear: None,
             src: "wifi".into(),
             doing: Some(match self.freq.and_then(channel) {
                 Some(c) => format!("{} (channel {c})", self.kind.as_str()),

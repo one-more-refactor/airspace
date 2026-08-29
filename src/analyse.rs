@@ -267,6 +267,7 @@ mod tests {
             flags: None,
             src: "ble".into(),
             doing: None,
+            in_ear: None,
         }
     }
 

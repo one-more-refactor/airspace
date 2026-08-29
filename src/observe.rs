@@ -84,6 +84,7 @@ impl Listener {
 
             let mut company = Vec::new();
             let mut cmsg = Vec::new();
+            let mut mfr_apple: Option<Vec<u8>> = None;
             if let Some(md) = get("ManufacturerData") {
                 if let Ok(map) = <HashMap<u16, OwnedValue>>::try_from(md.clone()) {
                     for (id, val) in map {
@@ -91,6 +92,9 @@ impl Listener {
                         if let Ok(bytes) = <Vec<u8>>::try_from(val) {
                             if let Some(first) = bytes.first() {
                                 cmsg.push((id, *first));
+                            }
+                            if id == 0x004C {
+                                mfr_apple = Some(bytes);
                             }
                         }
                     }
@@ -135,6 +139,10 @@ impl Listener {
                     .and_then(|v| v.first().copied()),
                 src: "ble".into(),
                 doing: None,
+                // The whole advertisement is in front of us here, so the one
+                // bit worth keeping is extracted now rather than shipping the
+                // payload on and decoding it somewhere with less context.
+                in_ear: mfr_apple.as_deref().and_then(crate::model::apple_in_ear),
             });
         }
         Ok(out)

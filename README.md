@@ -17,9 +17,57 @@ airspace: http://127.0.0.1:9970
 Open it and you get the room: every device audible right now, how far away it
 probably is, and what it announced about itself while announcing its presence.
 
-Where this is going — an allowlist instead of a capture of the whole building,
-a TUI instead of a web page, and real calibration instead of textbook constants
-— is in [ROADMAP.md](ROADMAP.md).
+## The console
+
+```
+airspace-console
+```
+
+Three views, `tab` between them.
+
+**live** — what is being tracked, how far away, how it was measured, and how
+often each node actually hears it. The basis of every distance is printed next
+to it, because a measured distance and a guessed one look identical if you only
+print the number.
+
+**calibrate** — replaces the textbook path-loss constants with a fit against
+your walls. Stand at one, two, four and eight metres; it takes a reading at each
+and solves for the reference power and the exponent. The result lands in
+`~/.config/airspace/calibration.toml`, which the collector reads and the console
+writes — so the daemon never needs write access to your home directory.
+
+**place** — scores the geometry you have. Two receivers in a line tell you
+almost nothing; two spread across the room give rings that cross at a useful
+angle. That difference has a name and a number, geometric dilution of precision,
+and this computes it for your layout and suggests where a further node would do
+the most good.
+
+It is an operations console rather than a setup wizard. A wizard runs once and
+lies forever afterwards — calibration drifts when furniture moves or a node gets
+nudged. Initial and continuous calibration are the same code path here; the only
+difference is whether you are being prompted.
+
+## Tracking your own devices, not the building
+
+By default airspace reports **only** devices you have configured an identity
+for. A stranger's device is dropped at ingest, before it reaches state, the page
+or the disk — so there is nothing to delete afterwards and no policy to trust.
+Set `general.track_only_known = false` to see everything again, which is what
+`airspace watch` and `airspace report` are for.
+
+It also refuses to treat an earbud's distance as comparable while it is out of
+an ear. In an ear, in a pocket, on a desk and in a case are four different radio
+situations, and averaging across them produces a number that is wrong in all
+four.
+
+## One node is a supported configuration
+
+A single machine with a Bluetooth adapter is enough for presence: is that device
+here, how far away, is it moving. Locking the screen when you stand up needs no
+network, no second board and no infrastructure. Extra ears buy *direction*, and
+nothing else — so they are an upgrade, not a prerequisite.
+
+The rest of the plan is in [ROADMAP.md](ROADMAP.md).
 
 ## Direction, honestly
 

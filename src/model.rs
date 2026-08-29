@@ -59,6 +59,98 @@ pub struct Observation {
     /// protocol says so in the clear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doing: Option<String>,
+    /// Whether an earbud is actually in an ear, when the device says so.
+    ///
+    /// Decoded at the observer rather than shipped as a raw payload: the node
+    /// has the whole advertisement in front of it and the collector only needs
+    /// the answer. Keeps the wire small and stops full manufacturer payloads
+    /// from being written to disk for no reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_ear: Option<bool>,
+}
+
+/// Apple's proximity-pairing advertisement, read for one bit.
+///
+/// Byte 5 is a status byte whose bits 1 and 3 are the two in-ear flags — which
+/// belongs to which bud depends on which is primary, and that does not matter
+/// here because either ear means the thing is being worn.
+pub fn apple_in_ear(payload: &[u8]) -> Option<bool> {
+    const PROXIMITY_TYPE: u8 = 0x07;
+    const PROXIMITY_LEN: usize = 27;
+    if payload.len() != PROXIMITY_LEN || payload[0] != PROXIMITY_TYPE {
+        return None;
+    }
+    let status = payload[5];
+    Some(status & 0x02 != 0 || status & 0x08 != 0)
+}
+
+/// How a distance was arrived at. The UI says which, because they are not
+/// equally trustworthy and presenting them identically is the lie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Basis {
+    /// Fitted from readings taken at known distances in this room.
+    Measured,
+    /// Used the transmit power the device advertises, with textbook constants.
+    Advertised,
+    /// Textbook constants throughout. A band, not a number.
+    Assumed,
+}
+
+/// A fitted path-loss model for one device heard by one node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Calibration {
+    pub node: String,
+    pub device: String,
+    /// Signal strength this node reads from this device at one metre.
+    pub rssi_at_1m: f32,
+    /// How fast it falls off here. Free space is 2.0; a flat with walls and
+    /// furniture is usually 2.5 to 4, and it is not the same in every
+    /// direction, which is the honest limit of a single-exponent model.
+    pub exponent: f32,
+    pub samples: u32,
+}
+
+impl Calibration {
+    pub fn metres(&self, rssi: i16) -> f32 {
+        10f32.powf((self.rssi_at_1m - rssi as f32) / (10.0 * self.exponent))
+    }
+}
+
+/// Least-squares fit of the two path-loss constants to real readings.
+///
+/// Signal strength is linear in the logarithm of distance, so fitting
+/// `rssi = A - 10·n·log10(d)` is an ordinary straight-line fit against
+/// `log10(d)`. Needs at least two distinct distances; anything less has no
+/// slope to find and returns None rather than inventing one.
+pub fn fit(samples: &[(f32, i16)]) -> Option<(f32, f32)> {
+    let pts: Vec<(f32, f32)> = samples
+        .iter()
+        .filter(|(d, _)| *d > 0.0)
+        .map(|(d, r)| (d.log10(), *r as f32))
+        .collect();
+    if pts.len() < 2 {
+        return None;
+    }
+    let n = pts.len() as f32;
+    let mx = pts.iter().map(|p| p.0).sum::<f32>() / n;
+    let my = pts.iter().map(|p| p.1).sum::<f32>() / n;
+    let sxx: f32 = pts.iter().map(|p| (p.0 - mx) * (p.0 - mx)).sum();
+    if sxx.abs() < 1e-6 {
+        return None; // every sample at the same distance: no slope exists
+    }
+    let sxy: f32 = pts.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
+    let slope = sxy / sxx;
+    let intercept = my - slope * mx;
+    // slope is -10n, intercept is the reading at one metre.
+    let exponent = -slope / 10.0;
+    // A negative or absurd exponent means the readings do not describe a radio
+    // getting weaker with distance — usually a sample taken while the device
+    // was in a pocket. Refuse rather than store nonsense.
+    if !(0.5..=6.0).contains(&exponent) {
+        return None;
+    }
+    Some((intercept, exponent))
 }
 
 fn ble() -> String {
@@ -290,6 +382,41 @@ mod tests {
         // 0x00240418 — what the AirPods on this desk actually report.
         assert_eq!(device_class(0x00240418), Some("headphones"));
         assert_eq!(device_class(0x0), None);
+    }
+
+    #[test]
+    fn fits_a_path_loss_model_to_readings() {
+        // Readings generated from a known model must recover that model.
+        let (a, n) = (-55.0f32, 3.0f32);
+        let samples: Vec<(f32, i16)> = [1.0f32, 2.0, 4.0, 8.0]
+            .iter()
+            .map(|d| (*d, (a - 10.0 * n * d.log10()).round() as i16))
+            .collect();
+        let (fa, fn_) = fit(&samples).expect("should fit");
+        assert!((fa - a).abs() < 1.0, "intercept {fa} should be near {a}");
+        assert!((fn_ - n).abs() < 0.2, "exponent {fn_} should be near {n}");
+    }
+
+    #[test]
+    fn refuses_to_fit_what_cannot_be_fitted() {
+        assert!(fit(&[]).is_none());
+        assert!(fit(&[(1.0, -50)]).is_none(), "one point has no slope");
+        // Every sample at the same distance.
+        assert!(fit(&[(2.0, -60), (2.0, -62), (2.0, -58)]).is_none());
+        // Readings that get STRONGER with distance are not a radio.
+        assert!(fit(&[(1.0, -80), (8.0, -40)]).is_none());
+    }
+
+    #[test]
+    fn reads_in_ear_from_the_proximity_advertisement() {
+        let mut p = vec![0u8; 27];
+        p[0] = 0x07;
+        p[5] = 0x22; // what these AirPods broadcast while worn
+        assert_eq!(apple_in_ear(&p), Some(true));
+        p[5] = 0x00;
+        assert_eq!(apple_in_ear(&p), Some(false));
+        // A different Apple message is not a proximity advertisement.
+        assert_eq!(apple_in_ear(&[0x10, 0x06, 0x00]), None);
     }
 
     #[test]
