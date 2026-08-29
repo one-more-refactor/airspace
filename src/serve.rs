@@ -223,11 +223,12 @@ async fn handle(mut sock: TcpStream, state: Arc<State>) -> Result<()> {
                 samples: Vec<(f32, i16)>,
             }
             match serde_json::from_slice::<Req>(&body) {
-                Ok(r) => match crate::model::fit(&r.samples) {
-                    Some((rssi_at_1m, exponent)) => {
+                Ok(r) => match crate::model::fit_full(&r.samples) {
+                    Some(f) => {
                         let out = serde_json::json!({
-                            "rssi_at_1m": rssi_at_1m,
-                            "exponent": exponent,
+                            "rssi_at_1m": f.rssi_at_1m,
+                            "exponent": f.exponent,
+                            "rms_db": f.rms_db,
                             "samples": r.samples.len(),
                         });
                         reply(&mut sock, "200 OK", "application/json",

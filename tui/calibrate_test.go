@@ -61,12 +61,48 @@ func TestRunNeedsExactlyOneKeypress(t *testing.T) {
 	if cur.calRun {
 		t.Fatal("run should end after the last station")
 	}
-	if len(cur.calSamples) != len(calDistances) {
-		t.Fatalf("expected %d readings, got %d", len(calDistances), len(cur.calSamples))
+	// Assert against the ladder this room actually uses, not a fixed one. The
+	// stations adapt to the room now: a reading taken through a wall is not
+	// describing the same propagation as the others and drags the exponent up.
+	want := cur.stations()
+	if len(cur.calSamples) != len(want) {
+		t.Fatalf("expected %d readings, got %d", len(want), len(cur.calSamples))
 	}
 	for i, s := range cur.calSamples {
-		if s[0] != calDistances[i] {
-			t.Fatalf("reading %d recorded against %.0f m, want %.0f m", i, s[0], calDistances[i])
+		if s[0] != want[i] {
+			t.Fatalf("reading %d recorded against %.1f m, want %.1f m", i, s[0], want[i])
+		}
+	}
+}
+
+// The stations have to suit the room. Eight metres in a small flat is a
+// reading taken through a wall, which is not the same propagation as the
+// others and quietly widens every distance the model later reports.
+func TestStationsFitTheRoom(t *testing.T) {
+	for _, r := range []Room{{Width: 10, Height: 8}, {Width: 4, Height: 3}, {Width: 30, Height: 20}} {
+		st := stationsFor(r)
+		if len(st) != 4 {
+			t.Fatalf("%v: want four stations, got %d", r, len(st))
+		}
+		longest := r.Width
+		if r.Height > longest {
+			longest = r.Height
+		}
+		if st[0] != 1 {
+			t.Fatalf("%v: the first station should be one metre, got %v", r, st[0])
+		}
+		for i := 1; i < len(st); i++ {
+			if st[i] <= st[i-1] {
+				t.Fatalf("%v: stations must increase, got %v", r, st)
+			}
+		}
+		// Never further than the room, and never so close together that the
+		// fit has no leverage on the exponent.
+		if st[3] > longest {
+			t.Fatalf("%v: furthest station %v is outside the room", r, st[3])
+		}
+		if st[3] < 2.5 {
+			t.Fatalf("%v: stations %v are too bunched to fit a falloff", r, st)
 		}
 	}
 }

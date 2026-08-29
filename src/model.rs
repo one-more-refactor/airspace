@@ -123,7 +123,21 @@ impl Calibration {
 /// `rssi = A - 10·n·log10(d)` is an ordinary straight-line fit against
 /// `log10(d)`. Needs at least two distinct distances; anything less has no
 /// slope to find and returns None rather than inventing one.
+pub struct Fit {
+    pub rssi_at_1m: f32,
+    pub exponent: f32,
+    /// Root-mean-square residual in dB: how far the readings sit from the
+    /// fitted line on average. This is the number that says whether to trust
+    /// the other two, and returning a fit without it is how a calibration
+    /// gets believed more than it deserves.
+    pub rms_db: f32,
+}
+
 pub fn fit(samples: &[(f32, i16)]) -> Option<(f32, f32)> {
+    fit_full(samples).map(|f| (f.rssi_at_1m, f.exponent))
+}
+
+pub fn fit_full(samples: &[(f32, i16)]) -> Option<Fit> {
     let pts: Vec<(f32, f32)> = samples
         .iter()
         .filter(|(d, _)| *d > 0.0)
@@ -150,7 +164,17 @@ pub fn fit(samples: &[(f32, i16)]) -> Option<(f32, f32)> {
     if !(0.5..=6.0).contains(&exponent) {
         return None;
     }
-    Some((intercept, exponent))
+    // How well the straight line actually describes these points. Radio in a
+    // room is not a straight line — walls, furniture and multipath all bend it
+    // — so the residual is not a formality, it is the honest error bar on
+    // every distance this model will later produce.
+    let mut sq = 0.0f32;
+    for (lx, y) in &pts {
+        let pred = intercept + slope * lx;
+        sq += (y - pred) * (y - pred);
+    }
+    let rms_db = (sq / pts.len() as f32).sqrt();
+    Some(Fit { rssi_at_1m: intercept, exponent, rms_db })
 }
 
 fn ble() -> String {
@@ -395,6 +419,23 @@ mod tests {
         let (fa, fn_) = fit(&samples).expect("should fit");
         assert!((fa - a).abs() < 1.0, "intercept {fa} should be near {a}");
         assert!((fn_ - n).abs() < 0.2, "exponent {fn_} should be near {n}");
+    }
+
+    #[test]
+    fn reports_how_well_the_line_actually_fits() {
+        // Points exactly on a line have no residual.
+        let (a, n) = (-55.0f32, 3.0f32);
+        let clean: Vec<(f32, i16)> = [1.0f32, 2.0, 4.0, 8.0]
+            .iter()
+            .map(|d| (*d, (a - 10.0 * n * d.log10()).round() as i16))
+            .collect();
+        let f = fit_full(&clean).unwrap();
+        assert!(f.rms_db < 1.0, "a clean fit should have a small residual, got {}", f.rms_db);
+
+        // Scattered points fit the same line far less well, and must say so.
+        let noisy = vec![(1.0f32, -50i16), (2.0, -75), (4.0, -62), (8.0, -95)];
+        let g = fit_full(&noisy).unwrap();
+        assert!(g.rms_db > f.rms_db * 3.0, "noise must show up as residual, got {}", g.rms_db);
     }
 
     #[test]

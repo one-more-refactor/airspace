@@ -30,9 +30,22 @@ const (
 	calFlashFor = 1400 * time.Millisecond
 	// ~12fps. Enough that the rings read as motion, not enough to cost anything.
 	calFramePeriod = 80 * time.Millisecond
-	// The reading is the median of whatever arrived in this window before the
-	// buzzer, not one instantaneous sample. A single advertisement can be
-	// several dB off for reasons that have nothing to do with distance.
+	// The reading is the median of everything heard during the whole station,
+	// not of the last few seconds.
+	//
+	// This is the difference between a rough calibration and a usable one, and
+	// it is a physics problem rather than a software one. Standing still
+	// samples ONE multipath realisation: at 2.4 GHz the wavelength is 12 cm, so
+	// constructive and destructive interference swing the reading by ±10 dB
+	// over the width of your hand. Averaging for longer in the same spot
+	// removes receiver noise and leaves that error completely untouched.
+	//
+	// Moving does remove it. Walking a slow arc at the target radius sweeps
+	// through many realisations, and their median is the actual path loss at
+	// that distance. So the instruction is "walk a slow arc", the whole ten
+	// seconds is the sampling window, and the spread is shown on screen — a
+	// tight spread means you stood still and the number is worth less than it
+	// looks.
 	calSettleWindow = 3 * time.Second
 )
 
@@ -40,6 +53,21 @@ type frameMsg time.Time
 
 func frame() tea.Cmd {
 	return tea.Tick(calFramePeriod, func(t time.Time) tea.Msg { return frameMsg(t) })
+}
+
+// spreadMeans explains the residual, because a number in dB is only useful to
+// someone who already knows what a good one looks like.
+func spreadMeans(rms float64) string {
+	switch {
+	case rms < 3:
+		return "the readings sat close to the\ncurve — about as good as a\nradio in a room gets."
+	case rms < 6:
+		return "some scatter, which is normal.\nDistances will be right to\nroughly a metre or two."
+	case rms < 9:
+		return "noisy. Walk a wider, slower\narc next time — standing still\nsamples one spot's echoes."
+	default:
+		return "these readings are not\ndescribing distance. Something\nwas in the way, or a station\nwas measured from the wrong\nplace."
+	}
 }
 
 // ── chunky digits ────────────────────────────────────────────────────────────
@@ -227,12 +255,12 @@ func signalBar(rssi int, ok bool) string {
 
 // stationTrack is the progress through the run, drawn like checkpoints because
 // that is what they are.
-func stationTrack(stage int, done []bool) (string, string) {
+func stationTrack(stage int, done []bool, dists []float64) (string, string) {
 	// One mark plus a six-character segment: a seven-column pitch that the
 	// labels have to match exactly, or they walk away from their own marks.
 	const pitch = 7
 	var marks, labels strings.Builder
-	for i, d := range calDistances {
+	for i, d := range dists {
 		if i > 0 {
 			seg := strings.Repeat("━", pitch-1)
 			if i <= stage {
@@ -256,7 +284,7 @@ func stationTrack(stage int, done []bool) (string, string) {
 		} else {
 			labels.WriteString(dim.Render(lab))
 		}
-		if i < len(calDistances)-1 {
+		if i < len(dists)-1 {
 			if pad := pitch - len([]rune(lab)); pad > 0 {
 				labels.WriteString(strings.Repeat(" ", pad))
 			}
@@ -331,21 +359,26 @@ func (m model) calibrateScreen() string {
 	// ── finished ─────────────────────────────────────────────────────────
 	case m.calFitted != nil:
 		f := m.calFitted
-		body = centreBlock(rippleField(calFieldW(w), 11, phase*0.5, []string{"MEASURED"}, okc.Bold(true)), w) + "\n\n" +
+		word, qcol := fitQuality(m.calFitted.RMSdB)
+		body = centreBlock(rippleField(calFieldW(w), 11, phase*0.5, []string{word},
+			lipgloss.NewStyle().Bold(true).Foreground(qcol)), w) + "\n\n" +
 			centreLine(dim.Render("at one metre  ")+bold.Render(fmt.Sprintf("%.0f dBm", f.RSSIAtOneMetre)), w) + "\n" +
 			centreLine(dim.Render("falloff       ")+bold.Render(fmt.Sprintf("%.2f", f.Exponent)), w) + "\n\n" +
-			centreBlock(multiline(dim, falloffMeans(f.Exponent)), w) + "\n\n" +
+			centreLine(dim.Render("spread        ")+bold.Render(fmt.Sprintf("%.1f dB", f.RMSdB)), w) + "\n\n" +
+			centreBlock(multiline(dim, falloffMeans(f.Exponent)), w) + "\n" +
+			centreBlock(multiline(stFaint, spreadMeans(f.RMSdB)), w) + "\n\n" +
 			centreLine(okc.Render(fmt.Sprintf("distances from %s are measured now, not guessed", node)), w)
 
 	// ── running ──────────────────────────────────────────────────────────
 	case m.calRun:
-		done := make([]bool, len(calDistances))
+		dists := m.stations()
+		done := make([]bool, len(dists))
 		for i := range done {
 			done[i] = i < len(m.calSamples)
 		}
 		stage := m.calStage
-		if stage >= len(calDistances) {
-			stage = len(calDistances) - 1
+		if stage >= len(dists) {
+			stage = len(dists) - 1
 		}
 		rssi, heard := 0, false
 		if ns := m.nodes(); len(ns) > 0 && m.sel < len(ns) {
@@ -356,7 +389,7 @@ func (m model) calibrateScreen() string {
 		if !m.calFlashUntil.IsZero() {
 			// A capture: the rings burst outward instead of drifting.
 			field = centreBlock(rippleField(calFieldW(w), 13, phase*3.2, []string{"GOT IT"}, okc.Bold(true)), w)
-			caption = centreLine(dim.Render("hold still — next station coming up"), w)
+			caption = centreLine(dim.Render("got it — next station coming up"), w)
 		} else {
 			left := int(math.Ceil(time.Until(m.calDeadline).Seconds()))
 			if left < 0 {
@@ -367,11 +400,11 @@ func (m model) calibrateScreen() string {
 				st = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 			}
 			field = centreBlock(rippleField(calFieldW(w), 13, phase, bigNumber(left), st), w)
-			caption = centreLine(bold.Render(fmt.Sprintf("WALK TO %.0f METRES", calDistances[stage]))+
+			caption = centreLine(bold.Render(fmt.Sprintf("CIRCLE SLOWLY AT %.1f METRES", dists[stage]))+
 				dim.Render(fmt.Sprintf("  from %s", node)), w)
 		}
 
-		marks, labels := stationTrack(stage, done)
+		marks, labels := stationTrack(stage, done, dists)
 		body = field + "\n\n" + caption + "\n\n" +
 			centreLine(signalBar(rssi, heard), w) + "\n\n" +
 			centreLine(marks, w) + "\n" + centreLine(labels, w)

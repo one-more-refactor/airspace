@@ -83,9 +83,28 @@ type model struct {
 	frame int
 }
 
-// Spread over a decade so the fit has real leverage on the exponent. Readings
+// Spread over a decade so the fit has real leverage on the exponent: readings
 // at one and one-and-a-half metres describe nearly the same point twice.
 var calDistances = []float64{1, 2, 4, 8}
+
+// stationsFor picks distances that fit the room.
+//
+// Eight metres is most of the way across a flat, and a reading taken through a
+// wall is not describing the same propagation as the other three — it drags
+// the exponent up and quietly widens every distance the model later reports.
+// So the far station is capped at about two thirds of the room's longest
+// dimension, and the near ones stay geometrically spaced to keep the leverage.
+func stationsFor(r Room) []float64 {
+	longest := math.Max(r.Width, r.Height)
+	far := math.Min(8, math.Max(3, longest*0.66))
+	// Four stations, geometrically spaced from 1 m to `far`.
+	out := make([]float64, 4)
+	ratio := math.Pow(far, 1.0/3.0)
+	for i := range out {
+		out[i] = math.Round(math.Pow(ratio, float64(i))*10) / 10
+	}
+	return out
+}
 
 func main() {
 	base := os.Getenv("AIRSPACE_URL")
@@ -147,10 +166,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastErr = msg.err
 		} else {
 			m.snap, m.lastErr, m.lastOK = msg.snap, nil, time.Now()
-			// Gather readings in the seconds before the buzzer so the sample
-			// is a median rather than whichever advertisement landed last.
-			if m.calRun && m.calFlashUntil.IsZero() &&
-				time.Until(m.calDeadline) <= calSettleWindow {
+			// Gather readings for the whole station, not just the last few
+			// seconds. See calSettleWindow: the dominant error is spatial, not
+			// temporal, so what makes this accurate is that you are walking
+			// while it samples.
+			if m.calRun && m.calFlashUntil.IsZero() {
 				if ns := m.nodes(); len(ns) > 0 && m.sel < len(ns) {
 					if r, ok := m.rssiFor(m.calDevice, ns[m.sel].Name); ok {
 						m.calWindow = append(m.calWindow, r)
@@ -176,7 +196,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if now.After(m.calFlashUntil) {
 				m.calFlashUntil = time.Time{}
 				m.calStage++
-				if m.calStage >= len(calDistances) {
+				if m.calStage >= len(m.stations()) {
 					m.calRun = false
 					samples, api := m.calSamples, m.api
 					return m, tea.Batch(frame(), func() tea.Msg {
@@ -339,7 +359,7 @@ func (m model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // the run — being unable to hear it from eight metres is itself a result, and
 // the fit only needs two points.
 func (m model) captureStation() model {
-	if m.calStage >= len(calDistances) {
+	if m.calStage >= len(m.stations()) {
 		return m
 	}
 	ns := m.nodes()
@@ -355,12 +375,21 @@ func (m model) captureStation() model {
 	}
 	if !ok {
 		m.calNote = fmt.Sprintf("%s could not hear it at %.0f m — skipping that one",
-			ns[m.sel].Name, calDistances[m.calStage])
+			ns[m.sel].Name, m.stations()[m.calStage])
 		return m
 	}
-	m.calSamples = append(m.calSamples, [2]float64{calDistances[m.calStage], float64(rssi)})
+	m.calSamples = append(m.calSamples, [2]float64{m.stations()[m.calStage], float64(rssi)})
 	m.calNote = ""
 	return m
+}
+
+// stations are the distances for this room, or the default ladder if the room
+// is unknown.
+func (m model) stations() []float64 {
+	if m.snap == nil {
+		return calDistances
+	}
+	return stationsFor(m.snap.Room)
 }
 
 func (m model) rssiFor(device, node string) (int, bool) {
