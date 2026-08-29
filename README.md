@@ -55,10 +55,20 @@ nothing about where there is a plug socket.
 and the *basis* is always shown, because a measured distance and a guessed one
 look identical if you only print the number.
 
-**Measuring replaces the guessing.** `c` walks you to one, two, four and eight
-metres, takes a reading at each, and fits your actual walls. The result is
-described in words — "normal for a room with furniture in it", "something solid
-is in the way" — not as a path-loss exponent you have to have an intuition for.
+**Measuring replaces the guessing.** `c` takes the whole screen and turns
+calibration into a run: press enter *once*, then put the keyboard down. It
+counts you down to one, two, four and eight metres in turn, takes the reading
+when the number hits zero, and fits your actual walls.
+
+One keypress is the whole design. Calibrating means standing a known distance
+away holding the device, which is exactly the moment you cannot reach the
+keyboard — so the old version, which asked you to press enter at each station,
+was asking you to be in two places at once. The signal bar moves as you walk,
+so you can see the thing being measured respond to you, and the reading is the
+median of the last few seconds rather than whichever advertisement landed on
+the buzzer. The result is described in words — "normal for a room with
+furniture in it", "something solid is in the way" — not as a path-loss exponent
+you have to have an intuition for.
 
 **The footer only offers keys that do something right now.** A key you have to
 learn to ignore is a key that should not have been there.
