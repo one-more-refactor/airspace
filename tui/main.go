@@ -1,16 +1,18 @@
-// airspace-console — the operations view.
+// airspace-console — the room, and the things in it.
 //
-// Not a setup wizard. A wizard runs once and lies forever afterwards:
-// calibration drifts when furniture moves, a door closes, a node gets nudged.
-// This is a thing you leave open, which keeps measuring and tells you when the
-// picture stopped being true. Initial and continuous calibration are the same
-// code path; the only difference is whether you are being prompted.
+// The design rule, and everything below follows from it: **you should never
+// need to be told what a word means to use this.** The previous version made
+// you type coordinates into a TOML file and then read a dilution figure to find
+// out whether they were any good. Both of those are handbook moments. Here you
+// move a marker with the arrow keys and the floor goes green under it.
 //
-// It also exists because every failure in this project so far presented as
-// SILENCE — a beacon blind after suspend, a collector alive with a dead D-Bus
-// connection, firmware logging to pins with no cable on them — and silence is
-// indistinguishable from a quiet room. A live rate makes that visible without
-// anyone having to suspect it first.
+// Three consequences worth naming:
+//
+//   - There is one screen. Modes are overlays on the room rather than tabs you
+//     navigate between, so you never lose your bearings.
+//   - The first line about any device is a sentence — "at your desk, estimated"
+//     — and the numbers are underneath for when you want them.
+//   - The footer only ever offers keys that do something right now.
 package main
 
 import (
@@ -24,12 +26,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-type view int
+type mode int
 
 const (
-	viewLive view = iota
-	viewCalibrate
-	viewPlace
+	modeWatch mode = iota // looking at the room
+	modeMove              // moving a node around in it
+	modeCalibrate
 )
 
 type tickMsg time.Time
@@ -44,19 +46,19 @@ type fitMsg struct {
 
 type model struct {
 	api  *client
-	view view
+	mode mode
 
 	snap    *Snapshot
 	lastErr error
-	// When the collector last answered. The console must not present stale
-	// numbers as live ones — that is the failure mode it exists to catch.
-	lastOK time.Time
+	lastOK  time.Time
 
-	cursor int
+	sel int // selected node, in snapshot order
 
-	// calibration wizard
+	// moving
+	moved map[string]point // pending positions, not yet written
+
+	// calibrating
 	calDevice  string
-	calNode    string
 	calStage   int
 	calSamples [][2]float64
 	calStatus  string
@@ -65,9 +67,8 @@ type model struct {
 	width, height int
 }
 
-// The distances to sample at. Spread over a decade so the fit has real leverage
-// on the exponent: readings at 1 and 1.5 metres describe a line through almost
-// the same point twice.
+// Spread over a decade so the fit has real leverage on the exponent. Readings
+// at one and one-and-a-half metres describe nearly the same point twice.
 var calDistances = []float64{1, 2, 4, 8}
 
 func main() {
@@ -75,7 +76,7 @@ func main() {
 	if base == "" {
 		base = "http://127.0.0.1:9970"
 	}
-	m := model{api: newClient(base), view: viewLive}
+	m := model{api: newClient(base), moved: map[string]point{}, width: 80, height: 30}
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -89,10 +90,32 @@ func tick() tea.Cmd {
 }
 
 func fetch(c *client) tea.Cmd {
-	return func() tea.Msg {
-		s, err := c.state()
-		return stateMsg{s, err}
+	return func() tea.Msg { s, err := c.state(); return stateMsg{s, err} }
+}
+
+// nodes returns positions with any unsaved moves applied, so the room you are
+// looking at is the room you are editing.
+func (m model) nodes() []Node {
+	if m.snap == nil {
+		return nil
 	}
+	out := make([]Node, len(m.snap.Nodes))
+	copy(out, m.snap.Nodes)
+	for i := range out {
+		if p, ok := m.moved[out[i].Name]; ok {
+			out[i].X, out[i].Y = p.X, p.Y
+		}
+	}
+	return out
+}
+
+func (m model) nodePoints() []point {
+	ns := m.nodes()
+	ps := make([]point, len(ns))
+	for i, n := range ns {
+		ps[i] = point{n.X, n.Y}
+	}
+	return ps
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -112,96 +135,159 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case fitMsg:
 		if msg.err != nil {
-			m.calStatus = msg.err.Error()
-			m.calFitted = nil
+			m.calStatus, m.calFitted = msg.err.Error(), nil
 		} else {
 			m.calFitted = msg.res
+			node := ""
+			if ns := m.nodes(); len(ns) > 0 && m.sel < len(ns) {
+				node = ns[m.sel].Name
+			}
 			err := saveCalibration(calibration{
-				Node: m.calNode, Device: m.calDevice,
-				RSSIAt1m: msg.res.RSSIAtOneMetre, Exponent: msg.res.Exponent,
-				Samples: msg.res.Samples,
+				Node: node, Device: m.calDevice,
+				RSSIAt1m: msg.res.RSSIAtOneMetre, Exponent: msg.res.Exponent, Samples: msg.res.Samples,
 			})
 			if err != nil {
-				m.calStatus = "fitted, but could not write the file: " + err.Error()
+				m.calStatus = "measured, but could not save: " + err.Error()
 			} else {
-				m.calStatus = "saved to " + calibrationPath() +
-					" — the collector picks it up on its next restart"
+				m.calStatus = "saved — distances from this node are now measured rather than guessed"
 			}
 		}
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		case "tab":
-			m.view = (m.view + 1) % 3
-			m.cursor = 0
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			m.cursor++
-		case "enter", " ":
-			return m.enter()
-		case "r":
-			if m.view == viewCalibrate {
-				m = m.resetCalibration()
-			}
-		}
+		return m.key(msg)
 	}
 	return m, nil
 }
 
-func (m model) enter() (tea.Model, tea.Cmd) {
-	if m.view != viewCalibrate || m.snap == nil {
+func (m model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	ns := m.nodes()
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		if m.mode == modeMove && m.sel < len(ns) {
+			// Abandon the move rather than half-applying it.
+			delete(m.moved, ns[m.sel].Name)
+		}
+		m.mode = modeWatch
+		m.calStatus = ""
 		return m, nil
 	}
-	switch {
-	case m.calDevice == "":
-		if m.cursor < len(m.snap.Devices) {
-			m.calDevice = m.snap.Devices[m.cursor].Label
-			m.cursor = 0
+
+	switch m.mode {
+	case modeWatch:
+		switch msg.String() {
+		case "tab", "n":
+			if len(ns) > 0 {
+				m.sel = (m.sel + 1) % len(ns)
+			}
+		case "m":
+			if len(ns) > 0 {
+				m.mode = modeMove
+			}
+		case "c":
+			if m.snap != nil && len(m.snap.Devices) > 0 {
+				m.mode = modeCalibrate
+				m.calDevice, m.calStage, m.calSamples = m.snap.Devices[0].Label, 0, nil
+				m.calFitted, m.calStatus = nil, ""
+			}
 		}
-	case m.calNode == "":
-		if m.cursor < len(m.snap.Nodes) {
-			m.calNode = m.snap.Nodes[m.cursor].Name
-		}
-	case m.calStage < len(calDistances):
-		// Take the reading that node currently has for that device. Using the
-		// live value rather than an average is deliberate: the point of the
-		// prompt is that you are standing still at a known distance right now.
-		rssi, ok := m.currentRSSI()
-		if !ok {
-			m.calStatus = "that node cannot hear the device from here — " +
-				"which is itself a finding, and a reason to move it"
+
+	case modeMove:
+		if len(ns) == 0 {
+			m.mode = modeWatch
 			return m, nil
 		}
-		m.calSamples = append(m.calSamples, [2]float64{calDistances[m.calStage], float64(rssi)})
-		m.calStage++
-		m.calStatus = ""
-		if m.calStage == len(calDistances) {
-			samples := m.calSamples
-			api := m.api
-			return m, func() tea.Msg {
-				r, err := api.fit(samples)
-				return fitMsg{r, err}
+		n := ns[m.sel]
+		p := point{n.X, n.Y}
+		const step = 0.25
+		switch msg.String() {
+		case "left", "h":
+			p.X -= step
+		case "right", "l":
+			p.X += step
+		case "up", "k":
+			p.Y -= step
+		case "down", "j":
+			p.Y += step
+		case "enter", " ":
+			if err := savePlacement(m.nodes()); err != nil {
+				m.calStatus = "could not save: " + err.Error()
+			} else {
+				m.calStatus = "placed — restart the collector to apply"
+				m.moved = map[string]point{}
 			}
+			m.mode = modeWatch
+			return m, nil
+		case "s":
+			// Put it where the geometry would like it most.
+			others := []point{}
+			for i, q := range m.nodePoints() {
+				if i != m.sel {
+					others = append(others, q)
+				}
+			}
+			if at, score := suggest(others, m.snap.Room.Width, m.snap.Room.Height); !math.IsInf(score, 1) {
+				p = at
+			}
+		}
+		p.X = clamp(p.X, 0, m.snap.Room.Width)
+		p.Y = clamp(p.Y, 0, m.snap.Room.Height)
+		m.moved[n.Name] = p
+
+	case modeCalibrate:
+		switch msg.String() {
+		case "tab":
+			if m.snap != nil && len(m.snap.Devices) > 0 {
+				for i, d := range m.snap.Devices {
+					if d.Label == m.calDevice {
+						m.calDevice = m.snap.Devices[(i+1)%len(m.snap.Devices)].Label
+						m.calStage, m.calSamples, m.calFitted = 0, nil, nil
+						break
+					}
+				}
+			}
+		case "enter", " ":
+			return m.takeSample()
 		}
 	}
 	return m, nil
 }
 
-func (m model) currentRSSI() (int, bool) {
+func (m model) takeSample() (tea.Model, tea.Cmd) {
+	if m.calStage >= len(calDistances) {
+		return m, nil
+	}
+	ns := m.nodes()
+	if len(ns) == 0 {
+		return m, nil
+	}
+	rssi, ok := m.rssiFor(m.calDevice, ns[m.sel].Name)
+	if !ok {
+		m.calStatus = "that node cannot hear it from where you are standing — " +
+			"which is itself worth knowing"
+		return m, nil
+	}
+	m.calSamples = append(m.calSamples, [2]float64{calDistances[m.calStage], float64(rssi)})
+	m.calStage++
+	m.calStatus = ""
+	if m.calStage == len(calDistances) {
+		samples, api := m.calSamples, m.api
+		return m, func() tea.Msg { r, err := api.fit(samples); return fitMsg{r, err} }
+	}
+	return m, nil
+}
+
+func (m model) rssiFor(device, node string) (int, bool) {
 	if m.snap == nil {
 		return 0, false
 	}
 	for _, d := range m.snap.Devices {
-		if d.Label != m.calDevice {
+		if d.Label != device {
 			continue
 		}
 		for _, h := range d.Heard {
-			if h.Node == m.calNode {
+			if h.Node == node {
 				return h.RSSI, true
 			}
 		}
@@ -209,234 +295,277 @@ func (m model) currentRSSI() (int, bool) {
 	return 0, false
 }
 
-func (m model) resetCalibration() model {
-	m.calDevice, m.calNode, m.calStage = "", "", 0
-	m.calSamples, m.calFitted, m.calStatus, m.cursor = nil, nil, "", 0
-	return m
-}
+func clamp(v, lo, hi float64) float64 { return math.Max(lo, math.Min(hi, v)) }
 
-// ── styling ──────────────────────────────────────────────────────────────────
+// ── view ─────────────────────────────────────────────────────────────────────
 
 var (
-	dim    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	bold   = lipgloss.NewStyle().Bold(true)
-	good   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	warn   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	bad    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	header = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	dim    = lipgloss.NewStyle().Foreground(colDim)
+	bold   = lipgloss.NewStyle().Bold(true).Foreground(colText)
+	accent = lipgloss.NewStyle().Foreground(colNode)
+	alarm  = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	okc    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 )
 
 func (m model) View() string {
-	var b strings.Builder
-	tabs := []string{"live", "calibrate", "place"}
-	for i, t := range tabs {
-		if view(i) == m.view {
-			b.WriteString(header.Render("[" + t + "]"))
-		} else {
-			b.WriteString(dim.Render(" " + t + " "))
-		}
-		b.WriteString(" ")
-	}
-	b.WriteString(dim.Render("  tab switches · q quits"))
-	b.WriteString("\n\n")
-
-	// Staleness is reported before anything else. A console showing numbers
-	// from a collector that stopped answering four minutes ago is exactly the
-	// silent failure this whole thing exists to make loud.
-	if m.lastErr != nil {
-		b.WriteString(bad.Render("collector unreachable: "+m.lastErr.Error()) + "\n")
-		if !m.lastOK.IsZero() {
-			b.WriteString(dim.Render(fmt.Sprintf("last answered %s ago — everything below is stale\n",
-				time.Since(m.lastOK).Round(time.Second))))
-		}
-		b.WriteString("\n")
-	}
 	if m.snap == nil {
-		b.WriteString(dim.Render("waiting for the collector…"))
-		return b.String()
+		if m.lastErr != nil {
+			return "\n  " + alarm.Render("Cannot reach the collector.") + "\n  " +
+				dim.Render(m.lastErr.Error()) + "\n\n  " +
+				dim.Render("Is it running?  systemctl --user status airspace") + "\n"
+		}
+		return "\n  " + dim.Render("Listening…") + "\n"
 	}
 
-	switch m.view {
-	case viewLive:
-		b.WriteString(m.liveView())
-	case viewCalibrate:
-		b.WriteString(m.calibrateView())
-	case viewPlace:
-		b.WriteString(m.placeView())
+	cw := m.width - 34
+	if cw < 30 {
+		cw = 30
 	}
-	return b.String()
+	if cw > 78 {
+		cw = 78
+	}
+	ch := m.height - 10
+	if ch < 10 {
+		ch = 10
+	}
+	if ch > 24 {
+		ch = 24
+	}
+
+	c := newCanvas(cw, ch, m.snap.Room)
+	if m.mode == modeMove {
+		c.shadeQuality(m.nodePoints())
+	}
+	m.drawDevices(c)
+	m.drawNodes(c)
+
+	room := c.render()
+	side := m.sidebar()
+	body := lipgloss.JoinHorizontal(lipgloss.Top, room, "  ", side)
+
+	return "\n" + m.title() + "\n" + body + "\n" + m.footer() + "\n"
 }
 
-func (m model) liveView() string {
-	var b strings.Builder
-	s := m.snap
-
-	b.WriteString(bold.Render(fmt.Sprintf("%d tracked device(s), %d node(s)", len(s.Devices), len(s.Nodes))))
-	if !s.CanLocate {
-		b.WriteString(dim.Render("  — distance only; direction needs three nodes"))
+func (m model) title() string {
+	s := bold.Render(" airspace")
+	if m.lastErr != nil && !m.lastOK.IsZero() {
+		s += alarm.Render(fmt.Sprintf("   stale — no answer for %s",
+			time.Since(m.lastOK).Round(time.Second)))
 	}
-	b.WriteString("\n\n")
+	switch m.mode {
+	case modeMove:
+		ns := m.nodes()
+		if len(ns) > 0 {
+			s += accent.Render(fmt.Sprintf("   moving %s — the floor shows how well it could place things",
+				ns[m.sel].Name))
+		}
+	case modeCalibrate:
+		s += accent.Render("   measuring " + m.calDevice)
+	}
+	return s
+}
 
-	if len(s.Devices) == 0 {
-		b.WriteString(dim.Render("Nothing being tracked.\n\n" +
-			"That is not the same as nothing being there: with track_only_known set,\n" +
-			"only devices with a configured identity are reported. Everything else is\n" +
-			"dropped before it is written down anywhere."))
+func (m model) drawDevices(c *canvas) {
+	ns := m.nodes()
+	for _, d := range m.snap.Devices {
+		for _, h := range d.Heard {
+			for _, n := range ns {
+				if n.Name == h.Node {
+					// A ring, not a dot: with one node this is genuinely all
+					// that is known, and drawing a point would be an invention.
+					c.ring(point{n.X, n.Y}, h.Metres, colDev, '·')
+				}
+			}
+		}
+	}
+}
+
+func (m model) drawNodes(c *canvas) {
+	for i, n := range m.nodes() {
+		glyph := '◆'
+		col := colNode
+		if i == m.sel {
+			glyph = '◈'
+			if m.mode == modeMove {
+				col = lipgloss.Color("226")
+			}
+		}
+		c.mark(point{n.X, n.Y}, glyph, n.Name, col)
+	}
+}
+
+func (m model) sidebar() string {
+	var b strings.Builder
+	switch m.mode {
+	case modeCalibrate:
+		return m.calibrateSidebar()
+	case modeMove:
+		med, _, usable := coverage(m.nodePoints(), m.snap.Room.Width, m.snap.Room.Height)
+		b.WriteString(bold.Render("Placement") + "\n\n")
+		b.WriteString(verdictPlain(len(m.nodes()), med) + "\n\n")
+		if !math.IsInf(med, 1) {
+			b.WriteString(dim.Render(fmt.Sprintf("covers %.0f%% of the room", usable*100)) + "\n")
+		}
+		b.WriteString("\n" + multiline(dim, "greener floor is better.\nthe corners matter most —\nthat is where two rings\nmeet at a shallow angle."))
 		return b.String()
 	}
 
-	for _, d := range s.Devices {
-		name := bold.Render(d.Label)
-		if !d.Known {
-			name += dim.Render(" (unrecognised)")
-		}
-		b.WriteString(name + "\n")
-		b.WriteString(dim.Render("  "+d.ID) + "\n")
+	if len(m.snap.Devices) == 0 {
+		return bold.Render("Nothing tracked") + "\n\n" +
+			multiline(dim, "Only devices you have named\nare reported. Everything else\nis dropped before it is\nwritten down anywhere.")
+	}
 
-		for _, h := range d.Heard {
-			// The basis is shown every time. A measured distance and a guessed
-			// one look identical if you only print the number.
-			basis := dim.Render("assumed")
-			switch h.Basis {
-			case "measured":
-				basis = good.Render("measured")
-			case "advertised":
-				basis = warn.Render("advertised")
-			}
-			ratio := good.Render(fmt.Sprintf("%3.0f%%", h.HeardRatio*100))
-			switch {
-			case h.HeardRatio < 0.3:
-				ratio = bad.Render(fmt.Sprintf("%3.0f%%", h.HeardRatio*100))
-			case h.HeardRatio < 0.7:
-				ratio = warn.Render(fmt.Sprintf("%3.0f%%", h.HeardRatio*100))
-			}
-			b.WriteString(fmt.Sprintf("  %-10s %6.1f m  %4d dBm  %-22s heard %s  %s\n",
-				h.Node, h.Metres, h.RSSI, basis, ratio, dim.Render(fmt.Sprintf("%ds ago", h.Age))))
+	for _, d := range m.snap.Devices {
+		b.WriteString(bold.Render(d.Label) + "\n")
+		if len(d.Heard) == 0 {
+			b.WriteString(dim.Render("  not heard just now") + "\n\n")
+			continue
 		}
-		if d.InEar != nil {
-			state := "out of ear"
-			if *d.InEar {
-				state = "in ear"
+		best := d.Heard[0]
+		for _, h := range d.Heard {
+			if h.Metres < best.Metres {
+				best = h
 			}
-			b.WriteString(dim.Render("  "+state) + "\n")
+		}
+		b.WriteString("  " + whereabouts(best.Metres) + "\n")
+		b.WriteString(dim.Render(fmt.Sprintf("  %.1f m · %s", best.Metres, confidence(best.Basis))) + "\n")
+		if d.InEar != nil {
+			if *d.InEar {
+				b.WriteString(okc.Render("  being worn") + "\n")
+			} else {
+				b.WriteString(dim.Render("  not being worn") + "\n")
+			}
+		}
+		for _, h := range d.Heard {
+			word, col := reliability(h.HeardRatio)
+			b.WriteString(lipgloss.NewStyle().Foreground(col).Render(
+				fmt.Sprintf("  %s %s", bar(h.HeardRatio), h.Node)) + "\n")
+			if h.HeardRatio < 0.6 {
+				b.WriteString(dim.Render("    "+word) + "\n")
+			}
 		}
 		if d.Unreliable != nil {
-			b.WriteString(warn.Render("  ! "+*d.Unreliable) + "\n")
+			b.WriteString(multiline(dim, "  distance not comparable\n  while it is not worn") + "\n")
 		}
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-func (m model) calibrateView() string {
+func (m model) calibrateSidebar() string {
 	var b strings.Builder
-	b.WriteString(bold.Render("Calibrate a device against a node") + "\n")
-	b.WriteString(dim.Render(
-		"Distance is currently textbook constants: −59 dBm at one metre, exponent 2.5.\n"+
-			"Both are wrong for your walls. Measuring replaces them with a fit.\n") + "\n")
+	b.WriteString(bold.Render("Measuring") + "\n")
+	b.WriteString(accent.Render(m.calDevice) + "\n\n")
 
-	switch {
-	case m.calDevice == "":
-		b.WriteString("Which device?\n\n")
-		for i, d := range m.snap.Devices {
-			p := "  "
-			if i == m.cursor {
-				p = header.Render("> ")
-			}
-			b.WriteString(p + d.Label + "\n")
-		}
-	case m.calNode == "":
-		b.WriteString("Heard by which node?\n\n")
-		for i, n := range m.snap.Nodes {
-			p := "  "
-			if i == m.cursor {
-				p = header.Render("> ")
-			}
-			b.WriteString(fmt.Sprintf("%s%s  (%.1f, %.1f)\n", p, n.Name, n.X, n.Y))
-		}
-	case m.calStage < len(calDistances):
+	if m.calFitted != nil {
+		b.WriteString(okc.Render("Done.") + "\n\n")
+		b.WriteString(dim.Render(fmt.Sprintf("at 1 m   %.0f dBm", m.calFitted.RSSIAtOneMetre)) + "\n")
+		b.WriteString(dim.Render(fmt.Sprintf("falloff  %.2f", m.calFitted.Exponent)) + "\n")
+		b.WriteString("\n" + multiline(dim, falloffMeans(m.calFitted.Exponent)) + "\n")
+	} else if m.calStage < len(calDistances) {
 		d := calDistances[m.calStage]
-		b.WriteString(fmt.Sprintf("Stand %.0f metre(s) from %s, holding %s.\n",
-			d, bold.Render(m.calNode), bold.Render(m.calDevice)))
-		b.WriteString(dim.Render(
-			"Line of sight if you can — a body between the two is worth about 10 dB,\n"+
-				"which at these exponents is a factor of two and a half in apparent distance.\n"+
-				"If it is an earbud, wear it: a bud in a pocket is a different measurement.\n") + "\n")
-		if r, ok := m.currentRSSI(); ok {
-			b.WriteString(fmt.Sprintf("  reading now: %s\n", bold.Render(fmt.Sprintf("%d dBm", r))))
-		} else {
-			b.WriteString(bad.Render("  that node cannot hear it from here\n"))
-		}
-		b.WriteString("\n" + header.Render("  press enter to take the sample") + "\n")
-		if len(m.calSamples) > 0 {
-			b.WriteString("\n" + dim.Render("taken so far:") + "\n")
-			for _, s := range m.calSamples {
-				b.WriteString(dim.Render(fmt.Sprintf("  %.0f m → %.0f dBm\n", s[0], s[1])))
+		b.WriteString(bold.Render(fmt.Sprintf("Stand %.0f m away", d)) + "\n")
+		b.WriteString(dim.Render("from the highlighted node,") + "\n")
+		b.WriteString(dim.Render("holding the device.") + "\n\n")
+		ns := m.nodes()
+		if len(ns) > 0 {
+			if r, ok := m.rssiFor(m.calDevice, ns[m.sel].Name); ok {
+				b.WriteString(fmt.Sprintf("reading  %s\n", bold.Render(fmt.Sprintf("%d dBm", r))))
+			} else {
+				b.WriteString(alarm.Render("cannot hear it\n"))
 			}
 		}
-	default:
-		if m.calFitted != nil {
-			b.WriteString(good.Render("Fitted.") + "\n\n")
-			b.WriteString(fmt.Sprintf("  at one metre:  %.1f dBm\n", m.calFitted.RSSIAtOneMetre))
-			b.WriteString(fmt.Sprintf("  exponent:      %.2f\n", m.calFitted.Exponent))
-			b.WriteString(dim.Render(fmt.Sprintf(
-				"\n  Free space is 2.0. A flat is usually 2.5 to 4. Above 4 means\n"+
-					"  something substantial is in the way of at least one reading.\n")))
-		} else {
-			b.WriteString("fitting…\n")
-		}
+		b.WriteString("\n" + dim.Render(fmt.Sprintf("%d of %d taken", m.calStage, len(calDistances))))
 	}
-
 	if m.calStatus != "" {
-		b.WriteString("\n" + warn.Render(m.calStatus) + "\n")
+		b.WriteString("\n\n" + dim.Render(wrap(m.calStatus, 26)))
 	}
-	b.WriteString("\n" + dim.Render("r starts over"))
 	return b.String()
 }
 
-func (m model) placeView() string {
-	var b strings.Builder
-	s := m.snap
-	nodes := make([]point, 0, len(s.Nodes))
-	for _, n := range s.Nodes {
-		nodes = append(nodes, point{n.X, n.Y})
+// falloffMeans explains the exponent without naming it, because the number is
+// only useful if you know what a normal one looks like.
+func falloffMeans(n float64) string {
+	switch {
+	case n < 2.2:
+		return "almost nothing in the way —\nan unusually open room."
+	case n < 3.2:
+		return "normal for a room with\nfurniture in it."
+	case n < 4:
+		return "something solid is in the\nway of at least one reading."
+	default:
+		return "very lossy. A wall, or a\nreading taken through you."
 	}
+}
 
-	b.WriteString(bold.Render("Node placement") + "\n")
-	b.WriteString(dim.Render(
-		"Two ears in a line tell you almost nothing; two spread across the room give\n"+
-			"rings that cross at a useful angle. This scores the geometry you have.\n") + "\n")
+func verdictPlain(nodes int, med float64) string {
+	switch {
+	case nodes < 2:
+		return "One ear hears a distance,\nnever a direction.\n\nA second gives you two\npossible places; a third\nnarrows it to one."
+	case nodes == 2:
+		return "Two rings cross in two\nplaces. You will know how\nfar, and have two candidates\nfor where.\n\nA third resolves it."
+	case math.IsInf(med, 1):
+		return multiline(alarm, "These nodes are in a line.\nThere is no second direction\nto solve in — move one off\nthe axis.")
+	case med < 3:
+		return multiline(okc, "Good geometry.")
+	case med < 8:
+		return "Workable, but a small error\nin signal becomes a large\none in position."
+	default:
+		return multiline(alarm, "Poor. Move a node so it\nsees the room from a\ndifferent direction.")
+	}
+}
 
-	med, worst, usable := coverage(nodes, s.Room.Width, s.Room.Height)
-	b.WriteString(fmt.Sprintf("  room       %.1f × %.1f m\n", s.Room.Width, s.Room.Height))
-	b.WriteString(fmt.Sprintf("  nodes      %d\n", len(nodes)))
-	for _, n := range s.Nodes {
-		b.WriteString(dim.Render(fmt.Sprintf("             %-10s (%.1f, %.1f)\n", n.Name, n.X, n.Y)))
-	}
-	if math.IsInf(med, 1) {
-		b.WriteString("  geometry   " + bad.Render("not solvable") + "\n")
-	} else {
-		style := good
-		if med >= 5 {
-			style = warn
+// footer offers only what is live right now. A key that does nothing is a key
+// you have to learn to ignore.
+func (m model) footer() string {
+	var keys []string
+	switch m.mode {
+	case modeWatch:
+		if len(m.nodes()) > 1 {
+			keys = append(keys, "tab next node")
 		}
-		if med >= 10 {
-			style = bad
+		if len(m.nodes()) > 0 {
+			keys = append(keys, "m move it")
 		}
-		b.WriteString("  dilution   " + style.Render(fmt.Sprintf("%.1f median, %.1f worst", med, worst)) + "\n")
-		b.WriteString(fmt.Sprintf("  usable     %.0f%% of the room\n", usable*100))
+		if len(m.snap.Devices) > 0 {
+			keys = append(keys, "c measure a device")
+		}
+		keys = append(keys, "q quit")
+	case modeMove:
+		keys = []string{"←↑↓→ move", "s best spot", "enter place it", "esc cancel"}
+	case modeCalibrate:
+		if m.calFitted != nil {
+			keys = []string{"esc done"}
+		} else {
+			keys = []string{"enter take reading", "tab other device", "esc cancel"}
+		}
 	}
-	b.WriteString("\n  " + verdict(len(nodes), med) + "\n")
+	return " " + dim.Render(strings.Join(keys, "   ·   "))
+}
 
-	if len(nodes) >= 1 {
-		at, score := suggest(nodes, s.Room.Width, s.Room.Height)
-		if !math.IsInf(score, 1) {
-			b.WriteString("\n" + bold.Render("Best place for the next node") + "\n")
-			b.WriteString(fmt.Sprintf("  (%.1f, %.1f) — would give a median dilution of %.1f\n", at.X, at.Y, score))
-			b.WriteString(dim.Render(
-				"  Geometry only. It does not know where there is a plug socket,\n" +
-					"  a shelf, or a wall.\n"))
-		}
+// multiline styles each line separately. Styling a whole block pads every line
+// to the widest one and eats the trailing newline, which quietly shifts
+// whatever is written next.
+func multiline(st lipgloss.Style, s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = st.Render(l)
 	}
-	return b.String()
+	return strings.Join(lines, "\n")
+}
+
+func wrap(s string, w int) string {
+	var out, line strings.Builder
+	for _, word := range strings.Fields(s) {
+		if line.Len()+len(word)+1 > w {
+			out.WriteString(line.String() + "\n")
+			line.Reset()
+		}
+		if line.Len() > 0 {
+			line.WriteString(" ")
+		}
+		line.WriteString(word)
+	}
+	out.WriteString(line.String())
+	return out.String()
 }

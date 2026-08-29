@@ -31,6 +31,9 @@ pub struct Config {
     /// during calibration; absent until something has actually been measured.
     #[serde(default, rename = "calibration")]
     pub calibrations: Vec<crate::model::Calibration>,
+    /// Console-set node positions, overriding whatever each node reports.
+    #[serde(default, rename = "placement")]
+    pub placements: Vec<Node>,
     /// Devices you hold the identity key for, so their rotating addresses can
     /// be recognised as one thing. Written as repeated [[identity]] blocks.
     #[serde(default, rename = "identity")]
@@ -122,6 +125,7 @@ impl Default for Config {
             node: Node::default(),
             collector: Collector::default(),
             calibrations: Vec::new(),
+            placements: Vec::new(),
             identities: Vec::new(),
         }
     }
@@ -145,6 +149,10 @@ impl Config {
     /// your home directory — its unit sets ProtectHome=read-only and that
     /// stays true. It also means a rewritten calibration cannot clobber the
     /// comments in a config file a human maintains.
+    pub fn placement_path() -> std::path::PathBuf {
+        Self::path().with_file_name("placement.toml")
+    }
+
     pub fn calibration_path() -> std::path::PathBuf {
         Self::path().with_file_name("calibration.toml")
     }
@@ -155,6 +163,22 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
             Err(e) => return Err(e.into()),
         };
+        // Where the console puts nodes it has been asked to move.
+        //
+        // A node's own config says where that machine thinks it is, which is
+        // useless for a board on a shelf you cannot easily edit. These
+        // override it, so placement is something you do by moving a marker
+        // rather than by editing a file on another machine.
+        if let Ok(s) = std::fs::read_to_string(Self::placement_path()) {
+            #[derive(serde::Deserialize)]
+            struct Placements {
+                #[serde(default, rename = "placement")]
+                placements: Vec<Node>,
+            }
+            if let Ok(p) = toml::from_str::<Placements>(&s) {
+                cfg.placements = p.placements;
+            }
+        }
         if let Ok(s) = std::fs::read_to_string(Self::calibration_path()) {
             #[derive(serde::Deserialize)]
             struct Cals {
@@ -494,7 +518,14 @@ impl State {
             am.partial_cmp(&bm).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let mut nodes: Vec<Node> = i.nodes.values().cloned().collect();
+        let mut nodes: Vec<Node> = i
+            .nodes
+            .values()
+            .map(|n| match self.config.placements.iter().find(|p| p.name == n.name) {
+                Some(p) => Node { name: n.name.clone(), x: p.x, y: p.y },
+                None => n.clone(),
+            })
+            .collect();
         nodes.sort_by(|a, b| a.name.cmp(&b.name));
 
         Snapshot {
