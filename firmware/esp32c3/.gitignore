@@ -1,0 +1,7 @@
+# sdkconfig is generated from sdkconfig.defaults AND holds the wi-fi password
+# and the ingest token once you run menuconfig. It does not belong in a public
+# repository, and neither does anything derived from it.
+/build/
+/sdkconfig
+/sdkconfig.old
+/dependencies.lock
