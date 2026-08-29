@@ -194,6 +194,11 @@ async fn handle(mut sock: TcpStream, state: Arc<State>) -> Result<()> {
         // the arithmetic. That split keeps the fit in the one place it is
         // tested, and keeps the daemon from ever needing write access to a
         // home directory its unit mounts read-only.
+        // Room dimensions, so the console can draw and reshape it.
+        ("GET", "/api/room") => {
+            let body = serde_json::to_vec(&state.config.room)?;
+            reply(&mut sock, "200 OK", "application/json", &body).await
+        }
         ("POST", "/api/fit") => {
             let len: usize = header(&head, "content-length")
                 .and_then(|v| v.trim().parse().ok())

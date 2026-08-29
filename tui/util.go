@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // Tiny helpers for the calibration-file parser. It reads only what this program
 // writes, so a full TOML library would be a dependency for four keys in a file
@@ -18,3 +22,24 @@ func cutKV(line string) (key, val string, ok bool) {
 }
 
 func unquote(s string) string { return strings.Trim(s, `"`) }
+
+// keyOf builds a key message for tests, so the update path can be driven
+// without a terminal.
+func keyOf(s string) tea.KeyMsg {
+	switch s {
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	default:
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	}
+}

@@ -23,29 +23,50 @@ probably is, and what it announced about itself while announcing its presence.
 airspace-console
 ```
 
-Three views, `tab` between them.
+One screen: the room, with the things in it. Modes are overlays rather than
+tabs, so you never lose your bearings.
 
-**live** — what is being tracked, how far away, how it was measured, and how
-often each node actually hears it. The basis of every distance is printed next
-to it, because a measured distance and a guessed one look identical if you only
-print the number.
+```
+┌──────────────────────────────────────────┐  philip's phone
+│              ············                │    in this room
+│         ·····            ·····           │    3.2 m · estimated
+│      ···                      ···        │    ▰▰▰▰▰ carl
+│     ··          ◈ carl           ··      │
+│      ···                      ···        │  airpods
+│         ·····            ·····           │    next room, or through a wall
+│  ◆ ear1      ············                │    ▰▱▱▱▱ carl
+└──────────────────────────────────────────┘      only catches it occasionally
+ tab next node · m move it · c measure · q quit
+```
 
-**calibrate** — replaces the textbook path-loss constants with a fit against
-your walls. Stand at one, two, four and eight metres; it takes a reading at each
-and solves for the reference power and the exponent. The result lands in
-`~/.config/airspace/calibration.toml`, which the collector reads and the console
-writes — so the daemon never needs write access to your home directory.
+**Devices are rings, not dots.** With one node that is genuinely all that is
+known, and a dot would be an invention. The rings tighten into a point as ears
+are added, so the picture gets more certain in the same way the system does.
 
-**place** — scores the geometry you have. Two receivers in a line tell you
-almost nothing; two spread across the room give rings that cross at a useful
-angle. That difference has a name and a number, geometric dilution of precision,
-and this computes it for your layout and suggests where a further node would do
-the most good.
+**Placing a node is moving it.** Press `m` and the arrow keys move the marker
+while the floor shades green where the geometry is good and red where it is
+not. You do not need to know what dilution of precision means to find a decent
+spot — you move the thing until the room goes green. `s` jumps it to the best
+place the geometry can find, which is a suggestion and says so, because it knows
+nothing about where there is a plug socket.
 
-It is an operations console rather than a setup wizard. A wizard runs once and
-lies forever afterwards — calibration drifts when furniture moves or a node gets
-nudged. Initial and continuous calibration are the same code path here; the only
-difference is whether you are being prompted.
+**The first line is a sentence.** "at your desk, estimated" rather than
+"3.2 m basis=advertised". The numbers are underneath for when you want them,
+and the *basis* is always shown, because a measured distance and a guessed one
+look identical if you only print the number.
+
+**Measuring replaces the guessing.** `c` walks you to one, two, four and eight
+metres, takes a reading at each, and fits your actual walls. The result is
+described in words — "normal for a room with furniture in it", "something solid
+is in the way" — not as a path-loss exponent you have to have an intuition for.
+
+**The footer only offers keys that do something right now.** A key you have to
+learn to ignore is a key that should not have been there.
+
+Nothing it writes touches a file you maintain: placements go to
+`placement.toml` and measurements to `calibration.toml`, both read by the
+collector and written only by the console — which is also why the daemon can
+keep `ProtectHome=read-only`.
 
 ## Tracking your own devices, not the building
 

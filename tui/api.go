@@ -14,12 +14,12 @@ import (
 // declared — the collector is free to add more without breaking this.
 
 type Heard struct {
-	Node        string  `json:"node"`
-	RSSI        int     `json:"rssi"`
-	Metres      float64 `json:"metres"`
-	Basis       string  `json:"basis"`
-	Age         int     `json:"age"`
-	HeardRatio  float64 `json:"heard_ratio"`
+	Node       string  `json:"node"`
+	RSSI       int     `json:"rssi"`
+	Metres     float64 `json:"metres"`
+	Basis      string  `json:"basis"`
+	Age        int     `json:"age"`
+	HeardRatio float64 `json:"heard_ratio"`
 }
 
 type Device struct {
@@ -155,6 +155,27 @@ func saveCalibration(c calibration) error {
 	for _, e := range out {
 		fmt.Fprintf(&b, "\n[[calibration]]\nnode = %q\ndevice = %q\nrssi_at_1m = %.2f\nexponent = %.3f\nsamples = %d\n",
 			e.Node, e.Device, e.RSSIAt1m, e.Exponent, e.Samples)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, b.Bytes(), 0o600)
+}
+
+// savePlacement writes node positions the console has been asked to set.
+//
+// Separate from the config for the same reason calibration is: the daemon only
+// reads these, so its unit can keep ProtectHome=read-only, and a file a human
+// maintains never gets rewritten by a program.
+func savePlacement(nodes []Node) error {
+	path := filepath.Join(filepath.Dir(calibrationPath()), "placement.toml")
+	var b bytes.Buffer
+	b.WriteString("# Written by `airspace-console`. Node positions in metres from\n")
+	b.WriteString("# the room's top-left corner. These override whatever each node\n")
+	b.WriteString("# reports about itself, which is what makes it possible to place\n")
+	b.WriteString("# a board on a shelf without editing a file on it.\n")
+	for _, n := range nodes {
+		fmt.Fprintf(&b, "\n[[placement]]\nname = %q\nx = %.2f\ny = %.2f\n", n.Name, n.X, n.Y)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
