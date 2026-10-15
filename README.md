@@ -1,6 +1,13 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/brand/mark-dark.svg">
+  <img src=".github/brand/mark-light.svg" alt="" width="32" height="32">
+</picture>
+
 # airspace
 
 What the devices around you say out loud, without being asked — as a live map.
+
+<img src=".github/brand/kind-tool.svg" alt="kind: tool" height="20">&nbsp;<img src=".github/brand/status-paused.svg" alt="status: paused" height="20">
 
 > **Alpha — v0.1.0-alpha.** Bluetooth and Wi-Fi. Interfaces and output format
 > will change.
@@ -318,3 +325,13 @@ tool exists to warn people about, so:
 ## License
 
 GPL-3.0-or-later.
+
+---
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/brand/lockup-dark.svg">
+  <img src=".github/brand/lockup-light.svg" alt="one more" height="20">
+</picture>
+
+part of [one more](https://github.com/one-more-refactor) — small tools that
+keep their data in plain files and never ask you to make an account.
