@@ -79,7 +79,13 @@ impl Track {
     fn fingerprint(&self) -> String {
         let c: Vec<String> = self.company.iter().map(|x| format!("{x:04x}")).collect();
         let m: Vec<String> = self.cmsg.iter().map(|(c, x)| format!("{c:04x}:{x:02x}")).collect();
-        let s: Vec<String> = self.service.iter().map(|x| x[4..8].to_lowercase()).collect();
+        // `get` rather than slicing: a capture is a file anyone can hand you,
+        // and a service string shorter than a UUID must not crash the report.
+        let s: Vec<String> = self
+            .service
+            .iter()
+            .map(|x| x.get(4..8).unwrap_or(x).to_lowercase())
+            .collect();
         format!("{}|{}|{}", c.join(","), m.join(","), s.join(","))
     }
 }
@@ -305,6 +311,17 @@ mod tests {
         ]);
         assert!(b.chains.is_empty(), "overlapping lifetimes cannot be one device");
         assert_eq!(b.estimated_devices(), 2);
+    }
+
+    #[test]
+    fn a_malformed_service_string_does_not_panic() {
+        // Captures are plain files; a truncated or hand-edited one must still
+        // render rather than crash the report.
+        let a = analyse(&[
+            Observation { service: vec!["fd6".into()], ..obs(100, "11:11", "random", -60, vec![]) },
+            Observation { service: vec!["".into()], ..obs(130, "22:22", "random", -60, vec![]) },
+        ]);
+        assert_eq!(a.tracks.len(), 2);
     }
 
     #[test]
