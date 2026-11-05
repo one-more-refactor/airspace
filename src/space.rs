@@ -38,6 +38,11 @@ pub struct Config {
     /// be recognised as one thing. Written as repeated [[identity]] blocks.
     #[serde(default, rename = "identity")]
     pub identities: Vec<crate::identity::Identity>,
+    /// What config.toml itself said, before the console's files were laid
+    /// over it — kept so those files can be re-read while running without
+    /// losing anything, and so deleting one really does fall back.
+    #[serde(skip)]
+    base: Option<(Vec<crate::model::Calibration>, Vec<Node>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +132,7 @@ impl Default for Config {
             calibrations: Vec::new(),
             placements: Vec::new(),
             identities: Vec::new(),
+            base: None,
         }
     }
 }
@@ -163,6 +169,20 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
             Err(e) => return Err(e.into()),
         };
+        cfg.base = Some((cfg.calibrations.clone(), cfg.placements.clone()));
+        let (calibrations, placements) = cfg.console_files()?;
+        cfg.calibrations = calibrations;
+        cfg.placements = placements;
+        Ok(cfg)
+    }
+
+    /// config.toml's calibrations and placements with the console-written
+    /// files laid over them.
+    fn console_files(&self) -> anyhow::Result<(Vec<crate::model::Calibration>, Vec<Node>)> {
+        let (mut calibrations, mut placements) = self
+            .base
+            .clone()
+            .unwrap_or_else(|| (self.calibrations.clone(), self.placements.clone()));
         // Where the console puts nodes it has been asked to move.
         //
         // A node's own config says where that machine thinks it is, which is
@@ -176,7 +196,7 @@ impl Config {
                 placements: Vec<Node>,
             }
             if let Ok(p) = toml::from_str::<Placements>(&s) {
-                cfg.placements = p.placements;
+                placements = p.placements;
             }
         }
         if let Ok(s) = std::fs::read_to_string(Self::calibration_path()) {
@@ -189,12 +209,32 @@ impl Config {
             // Measured beats configured: a later entry for the same pair wins,
             // so recalibrating is just writing the file again.
             for cal in c.calibrations {
-                cfg.calibrations.retain(|x| !(x.node == cal.node && x.device == cal.device));
-                cfg.calibrations.push(cal);
+                calibrations.retain(|x| !(x.node == cal.node && x.device == cal.device));
+                calibrations.push(cal);
             }
         }
-        Ok(cfg)
+        Ok((calibrations, placements))
     }
+}
+
+/// Modification times of the two console-written files. Cheap enough to check
+/// on every snapshot, which is every two seconds per open page.
+fn console_stamp() -> (Option<SystemTime>, Option<SystemTime>) {
+    let m = |p: std::path::PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    (m(Config::calibration_path()), m(Config::placement_path()))
+}
+
+/// The calibrations and placements in force right now.
+///
+/// These used to be read once at startup, so a measurement the console said
+/// was "saved — distances are now measured" changed nothing until somebody
+/// restarted the collector. Now the collector notices the files change.
+#[derive(Default)]
+struct Overlay {
+    calibrations: Vec<crate::model::Calibration>,
+    placements: Vec<Node>,
+    /// None until following is switched on; then the stamp last applied.
+    stamp: Option<(Option<SystemTime>, Option<SystemTime>)>,
 }
 
 fn hostname() -> String {
@@ -281,6 +321,7 @@ const RATIO_WINDOW: u64 = 60;
 #[derive(Clone)]
 pub struct State {
     inner: Arc<Mutex<Inner>>,
+    overlay: Arc<Mutex<Overlay>>,
     pub config: Config,
 }
 
@@ -290,9 +331,58 @@ const STALE: u64 = 45;
 
 impl State {
     pub fn new(config: Config) -> State {
-        let mut inner = Inner::default();
-        inner.nodes.insert(config.node.name.clone(), config.node.clone());
-        State { inner: Arc::new(Mutex::new(inner)), config }
+        let state = State::collector_only(config);
+        let node = state.config.node.clone();
+        state.inner.lock().unwrap().nodes.insert(node.name.clone(), node);
+        state
+    }
+
+    /// A collector that is not itself an ear — `airspace serve --no-radio`, for
+    /// a machine without Bluetooth that only gathers what other nodes send. It
+    /// does not put itself on the map, because it hears nothing.
+    pub fn collector_only(config: Config) -> State {
+        let overlay = Overlay {
+            calibrations: config.calibrations.clone(),
+            placements: config.placements.clone(),
+            stamp: None,
+        };
+        State {
+            inner: Arc::new(Mutex::new(Inner::default())),
+            overlay: Arc::new(Mutex::new(overlay)),
+            config,
+        }
+    }
+
+    /// Re-read placement.toml and calibration.toml whenever they change, so
+    /// what the console saves takes effect without a restart. Off by default
+    /// so tests never see the files of whoever runs them.
+    pub fn follow_console_files(self) -> State {
+        self.overlay.lock().unwrap().stamp = Some(console_stamp());
+        self
+    }
+
+    fn refresh_overlay(&self) {
+        let mut o = self.overlay.lock().unwrap();
+        let Some(applied) = o.stamp else { return };
+        let now = console_stamp();
+        if now == applied {
+            return;
+        }
+        o.stamp = Some(now);
+        match self.config.console_files() {
+            Ok((calibrations, placements)) => {
+                eprintln!(
+                    "reloaded console files: {} calibration(s), {} placement(s)",
+                    calibrations.len(),
+                    placements.len()
+                );
+                o.calibrations = calibrations;
+                o.placements = placements;
+            }
+            // Keep the last good set rather than dropping to textbook constants
+            // because a half-written file was caught mid-save.
+            Err(e) => eprintln!("ignoring {}: {e}", Config::calibration_path().display()),
+        }
     }
 
     pub fn ingest(&self, node: &Node, obs: &[Observation]) {
@@ -359,6 +449,11 @@ impl State {
     }
 
     pub fn snapshot(&self) -> Snapshot {
+        self.refresh_overlay();
+        let (calibrations, placements) = {
+            let o = self.overlay.lock().unwrap();
+            (o.calibrations.clone(), o.placements.clone())
+        };
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let i = self.inner.lock().unwrap();
         let mut devices = Vec::new();
@@ -374,10 +469,7 @@ impl State {
                     // derived from an advertised power, which beats a textbook
                     // constant. Take the best available and say which it was.
                     let cal = who.as_ref().and_then(|w| {
-                        self.config
-                            .calibrations
-                            .iter()
-                            .find(|c| &c.node == n && &c.device == w)
+                        calibrations.iter().find(|c| &c.node == n && &c.device == w)
                     });
                     let (metres, calibrated, basis) = match (cal, m.map(|o| o.src.as_str())) {
                         (Some(c), _) => (c.metres(*r), true, crate::model::Basis::Measured),
@@ -521,7 +613,7 @@ impl State {
         let mut nodes: Vec<Node> = i
             .nodes
             .values()
-            .map(|n| match self.config.placements.iter().find(|p| p.name == n.name) {
+            .map(|n| match placements.iter().find(|p| p.name == n.name) {
                 Some(p) => Node { name: n.name.clone(), x: p.x, y: p.y },
                 None => n.clone(),
             })
