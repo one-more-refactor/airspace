@@ -379,10 +379,12 @@ mod tests {
 
     #[test]
     fn tells_a_randomised_address_from_a_burned_in_one() {
-        // 1e:5a:ca:… — locally administered, seen on this desk.
-        assert!(is_randomised(&[0x1e, 0x5a, 0xca, 0x03, 0x20, 0x19]));
-        // 00:09:52:… — a real OUI, which resolves to a manufacturer.
-        assert!(!is_randomised(&[0x00, 0x09, 0x52, 0x09, 0x22, 0x00]));
+        // 02:00:5e:… — the locally-administered bit set, as a phone's
+        // per-network random MAC has it. (Documentation range, not a capture.)
+        assert!(is_randomised(&[0x02, 0x00, 0x5e, 0x00, 0x53, 0x19]));
+        // 00:00:5e:00:53:… — a globally-administered address from the IANA
+        // documentation block (RFC 7042): burned in, never rotates.
+        assert!(!is_randomised(&[0x00, 0x00, 0x5e, 0x00, 0x53, 0x00]));
     }
 
     #[test]

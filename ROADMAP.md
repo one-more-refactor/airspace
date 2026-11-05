@@ -203,7 +203,7 @@ Which makes the AirPods IRK the concrete unblocker:
 
 ```
 sudo grep -A2 IdentityResolvingKey \
-  /var/lib/bluetooth/50:2E:91:74:A4:A1/1C:B3:C9:C5:44:14/info
+  /var/lib/bluetooth/<adapter-address>/<airpods-address>/info
 ```
 
 ### Bluetooth Mesh as the transport

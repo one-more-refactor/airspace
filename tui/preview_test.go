@@ -32,7 +32,7 @@ func TestPreviewMeasuring(t *testing.T) {
 	if err != nil {
 		t.Skip(err)
 	}
-	m.snap, m.mode, m.calDevice = s, modeCalibrate, "philip's phone"
+	m.snap, m.mode, m.calDevice = s, modeCalibrate, "my phone"
 
 	show := func(name string, mm model) {
 		fmt.Printf("\n═════ %s ═════\n%s\n", name, mm.View())

@@ -183,7 +183,7 @@ mod tests {
         let irk = parse_hex16("ec0234a357c8ad05341010a60a397d9b").unwrap();
         // Public address — top bits 0b00. Testing it would be meaningless and
         // occasionally produce a false positive.
-        assert!(!resolves(&irk, &[0x1c, 0xb3, 0xc9, 0xc5, 0x44, 0x14]));
+        assert!(!resolves(&irk, &[0x00, 0x00, 0x5e, 0x00, 0x53, 0x14]));
         // Static random — top bits 0b11.
         assert!(!resolves(&irk, &[0xd0, 0x00, 0x00, 0x00, 0x00, 0x00]));
     }
@@ -195,10 +195,10 @@ mod tests {
         let ids = vec![Identity {
             name: "phone".into(),
             irk: String::new(),
-            address: "EC:A9:07:A0:3A:60".into(),
+            address: "00:00:5E:00:53:01".into(),
         }];
-        assert_eq!(whose(&ids, "EC:A9:07:A0:3A:60").as_deref(), Some("phone"));
-        assert_eq!(whose(&ids, "ec:a9:07:a0:3a:60").as_deref(), Some("phone"));
+        assert_eq!(whose(&ids, "00:00:5E:00:53:01").as_deref(), Some("phone"));
+        assert_eq!(whose(&ids, "00:00:5e:00:53:01").as_deref(), Some("phone"));
         assert_eq!(whose(&ids, "11:22:33:44:55:66"), None);
     }
 
@@ -208,7 +208,7 @@ mod tests {
         // kind of hostile input.
         for s in [
             "", ":", "::::::", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ", "1:2:3:4:5:6",
-            "EC:A9:07:A0:3A:60:00", "-1:00:00:00:00:00",
+            "00:00:5E:00:53:01:00", "-1:00:00:00:00:00",
             &"f".repeat(1000), &"0".repeat(31), &"0".repeat(33),
         ] {
             let _ = parse_addr(s);
@@ -224,9 +224,9 @@ mod tests {
     #[test]
     fn parses_what_bluez_writes() {
         // BlueZ writes the key as unbroken uppercase hex.
-        assert!(parse_hex16("D11F4E076BB0085311AC04B5A0AB62B6").is_some());
+        assert!(parse_hex16("0123456789ABCDEF0123456789ABCDEF").is_some());
         assert!(parse_hex16("too short").is_none());
-        assert_eq!(parse_addr("EC:A9:07:A0:3A:60").unwrap()[0], 0xEC);
+        assert_eq!(parse_addr("02:00:5E:00:53:01").unwrap()[0], 0x02);
         assert!(parse_addr("nonsense").is_none());
     }
 }

@@ -53,7 +53,7 @@ readable from across that flat.
            CARL  ━━━━━━━━━━━━━━━━━━━━  hears it consistently
            EAR1  ━━━━━━━━━━━━──────────  most of the time
 
-              ▸ PHILIP'S PHONE     AIRPODS     WATCH
+              ▸ MY PHONE     EARBUDS     WATCH
 ```
 
 ### Why measuring asks you to keep moving

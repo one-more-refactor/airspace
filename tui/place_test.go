@@ -56,7 +56,7 @@ func TestSuggestImprovesOnWhatExists(t *testing.T) {
 func TestCalibrationRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	in := calibration{Node: "carl", Device: "philip's phone", RSSIAt1m: -57.5, Exponent: 2.85, Samples: 4}
+	in := calibration{Node: "carl", Device: "my phone", RSSIAt1m: -57.5, Exponent: 2.85, Samples: 4}
 	if err := saveCalibration(in); err != nil {
 		t.Fatal(err)
 	}
