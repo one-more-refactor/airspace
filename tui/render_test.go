@@ -23,9 +23,9 @@ func sample() Snapshot {
 		Room:  Room{Width: 10, Height: 8},
 		Nodes: []Node{{Name: "carl", X: 5, Y: 4}, {Name: "ear1", X: 1, Y: 7}},
 		Devices: []Device{
-			{ID: "AA:BB:CC:DD:EE:01", Label: "philip's phone", Known: true,
+			{ID: "AA:BB:CC:DD:EE:01", Label: "my phone", Known: true,
 				Heard: []Heard{{Node: "carl", RSSI: -58, Metres: 3.2, Basis: "advertised", HeardRatio: 1}}},
-			{ID: "AA:BB:CC:DD:EE:02", Label: "airpods", Known: true,
+			{ID: "AA:BB:CC:DD:EE:02", Label: "earbuds", Known: true,
 				Heard: []Heard{{Node: "carl", RSSI: -70, Metres: 9, Basis: "assumed", HeardRatio: 0.2}}},
 		},
 	}
@@ -63,7 +63,7 @@ func TestDegenerateStatesDoNotPanic(t *testing.T) {
 	// screen that quietly drops two thirds of what it tracks to look tidy is
 	// the same class of lie as a blind daemon that reports a quiet room.
 	m.snap.Devices = []Device{
-		{ID: "a", Label: "philip's phone", Heard: []Heard{{Node: "carl", Metres: 2, HeardRatio: 1}}},
+		{ID: "a", Label: "my phone", Heard: []Heard{{Node: "carl", Metres: 2, HeardRatio: 1}}},
 		{ID: "x", Label: "silent"},
 	}
 	m.mode = modeWatch
@@ -71,7 +71,7 @@ func TestDegenerateStatesDoNotPanic(t *testing.T) {
 	if !strings.Contains(out, "SILENT") {
 		t.Fatal("a device with no readings should still be listed in the roster")
 	}
-	if !strings.Contains(out, bigText("PHILIP'S PHONE")[0]) {
+	if !strings.Contains(out, bigText("MY PHONE")[0]) {
 		t.Fatal("the focused device should be the headline")
 	}
 }

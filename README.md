@@ -53,7 +53,7 @@ readable from across that flat.
            CARL  ━━━━━━━━━━━━━━━━━━━━  hears it consistently
            EAR1  ━━━━━━━━━━━━──────────  most of the time
 
-              ▸ PHILIP'S PHONE     AIRPODS     WATCH
+              ▸ MY PHONE     EARBUDS     WATCH
 ```
 
 ### Why measuring asks you to keep moving
@@ -235,10 +235,10 @@ sudo install -Dm644 contrib/airspace-wifi.service /etc/systemd/system/
 sudo systemctl enable --now airspace-wifi
 ```
 
-The unit makes the monitor interface and hands `CAP_NET_RAW` to that one
-process through `AmbientCapabilities`. Do not `setcap` the binary instead: a
-file capability applies to every subcommand — `serve`, `feed`, `report` — run
-from any shell.
+Replace `YOUR_USER` in the unit first. It makes the monitor interface and hands
+`CAP_NET_RAW` to that one process through `AmbientCapabilities`. Do not
+`setcap` the binary instead: a file capability applies to every subcommand —
+`serve`, `feed`, `report` — run from any shell.
 
 It feeds the same collector as everything else, so Wi-Fi devices appear on the
 same map with the same distance rings.
