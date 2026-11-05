@@ -3,6 +3,17 @@
 # Only the node position actually matters. Everything else has a default that
 # produces a sensible first picture.
 
+# ── What to report ───────────────────────────────────────────────────────────
+[general]
+# Report ONLY devices matching an [[identity]] below; a stranger's device is
+# dropped at ingest, before it reaches the page or the disk. Has no effect until
+# at least one identity exists. Set false to see everything in range.
+track_only_known = true
+# Only trust an earbud's distance while it says it is in an ear.
+require_worn = true
+# How long an in-ear reading stays valid after the bud comes out (seconds).
+worn_memory_secs = 600
+
 [room]
 # Metres. Used to draw the picture and to bound the position search. It does
 # not have to be a room — make it the floor, or the building, and put the ears
@@ -34,3 +45,18 @@ url = ""
 # anyone on the network draw imaginary people into your room, which is a worse
 # failure than not having the feature.
 token = ""
+
+# ── Your own devices ─────────────────────────────────────────────────────────
+# One block per device you own and have paired. The IRK comes from the
+# [IdentityResolvingKey] section of the bond file BlueZ keeps at
+#   /var/lib/bluetooth/<adapter-address>/<device-address>/info   (root only)
+# It is a serious secret: anyone holding it can recognise that device anywhere.
+# Keep this file 0600. `airspace whoami` checks that a key actually resolves.
+#
+# The values below are placeholders from the documentation ranges — replace
+# them with your own.
+#
+# [[identity]]
+# name = "my phone"
+# irk = "00112233445566778899AABBCCDDEEFF"   # 32 hex characters
+# address = "00:00:5E:00:53:01"              # identity address, as BlueZ shows it

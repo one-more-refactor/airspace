@@ -590,6 +590,33 @@ mod tests {
     }
 
     #[test]
+    fn the_shipped_example_config_parses() {
+        // deny_unknown_fields makes a stale example a hard error on first run,
+        // so the example is held to the same parser as a real config.
+        let cfg: Config = toml::from_str(include_str!("../airspace.toml.example"))
+            .expect("airspace.toml.example must parse");
+        assert!(cfg.general.track_only_known);
+        assert_eq!(cfg.node.name, "carl");
+    }
+
+    #[test]
+    fn strangers_are_dropped_once_an_identity_exists() {
+        let mut cfg = Config::default();
+        cfg.identities.push(crate::identity::Identity {
+            name: "mine".into(),
+            irk: String::new(),
+            address: "00:00:5E:00:53:01".into(),
+        });
+        let s = State::new(cfg);
+        let n = Node { name: "a".into(), x: 0.0, y: 0.0 };
+        s.ingest(&n, &[obs("00:00:5E:00:53:01", -60, now()), obs("00:00:5E:00:53:02", -60, now())]);
+        let snap = s.snapshot();
+        assert_eq!(snap.devices.len(), 1, "only the configured identity may reach state");
+        assert_eq!(snap.devices[0].label, "mine");
+        assert!(snap.devices[0].known);
+    }
+
+    #[test]
     fn stale_devices_leave_the_picture() {
         let s = State::new(Config::default());
         s.ingest(&Node::default(), &[obs("AA", -60, now() - STALE - 5)]);
