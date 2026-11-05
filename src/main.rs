@@ -38,6 +38,7 @@ USAGE:
     airspace doctor              what this machine\'s radios can and cannot hear
     airspace whoami [SECONDS]    watch for addresses that resolve to a configured
                                  identity — the check that a key actually works
+    airspace version             print the version
 
     Room size and this node\'s position live in ~/.config/airspace/config.toml.
 
@@ -48,25 +49,10 @@ USAGE:
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let capture = capture_path(&args);
-    let positional: Vec<&String> = {
-        let mut v = Vec::new();
-        let mut skip = false;
-        for a in args.iter().skip(1) {
-            if skip {
-                skip = false;
-                continue;
-            }
-            if a == "--capture" {
-                skip = true;
-                continue;
-            }
-            v.push(a);
-        }
-        v
-    };
+    let (capture, words) = split_args(&args);
+    let positional: Vec<&String> = words.iter().skip(1).collect();
 
-    match args.first().map(String::as_str).unwrap_or("help") {
+    match words.first().map(String::as_str).unwrap_or("help") {
         "serve" => {
             let cfg = space::Config::load()?;
             let bind = positional
@@ -111,11 +97,41 @@ async fn main() -> Result<()> {
             whoami(secs).await
         }
         "doctor" => doctor().await,
-        _ => {
+        "version" | "--version" | "-V" => {
+            println!("airspace {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        "help" | "--help" | "-h" => {
             print!("{USAGE}");
             Ok(())
         }
+        // A typo used to print the usage and exit 0, which a script or a
+        // systemd unit reads as success. Say what was wrong, and fail.
+        other => {
+            eprint!("airspace: unknown command {other:?}\n\n{USAGE}");
+            std::process::exit(2);
+        }
     }
+}
+
+/// Separate `--capture PATH` (or `--capture=PATH`) from everything else,
+/// wherever on the line it appears — including before the subcommand.
+fn split_args(args: &[String]) -> (PathBuf, Vec<String>) {
+    let mut capture = None;
+    let mut words = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--capture" {
+            if let Some(p) = it.next() {
+                capture = Some(PathBuf::from(p));
+            }
+        } else if let Some(p) = a.strip_prefix("--capture=") {
+            capture = Some(PathBuf::from(p));
+        } else {
+            words.push(a.clone());
+        }
+    }
+    (capture.unwrap_or_else(default_capture_path), words)
 }
 
 /// The Wi-Fi ear: a privileged listener that feeds the unprivileged collector.
@@ -269,12 +285,7 @@ async fn whoami(secs: u64) -> Result<()> {
     Ok(())
 }
 
-fn capture_path(args: &[String]) -> PathBuf {
-    if let Some(i) = args.iter().position(|a| a == "--capture") {
-        if let Some(p) = args.get(i + 1) {
-            return PathBuf::from(p);
-        }
-    }
+fn default_capture_path() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -414,10 +425,42 @@ async fn doctor() -> Result<()> {
         }
     }
     println!(
-        "\n  Probe requests are the richer source: a phone not connected to anything\n  \
-         asks after networks it has joined before, which is a list of places its\n  \
-         owner has been. Reading them needs monitor mode. If the line above says\n  \
-         no, a USB adapter on mt7921au / mt7612u is the usual fix."
+        "\n  Monitor mode is what `airspace wifi` needs. It hears transmitter\n  \
+         addresses, signal strength and network names from beacons — and from\n  \
+         probe requests only when a device names a network, which modern phones\n  \
+         mostly no longer do. If the line above says no, a USB adapter on\n  \
+         mt7921au / mt7612u is the usual fix."
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn capture_flag_is_found_anywhere_on_the_line() {
+        let (c, w) = split_args(&v(&["report", "--capture", "x.jsonl", "out.html"]));
+        assert_eq!(c, PathBuf::from("x.jsonl"));
+        assert_eq!(w, v(&["report", "out.html"]));
+
+        // Before the subcommand used to make "--capture" the command.
+        let (c, w) = split_args(&v(&["--capture", "x.jsonl", "report"]));
+        assert_eq!(c, PathBuf::from("x.jsonl"));
+        assert_eq!(w, v(&["report"]));
+
+        let (c, w) = split_args(&v(&["watch", "--capture=y.jsonl", "30"]));
+        assert_eq!(c, PathBuf::from("y.jsonl"));
+        assert_eq!(w, v(&["watch", "30"]));
+    }
+
+    #[test]
+    fn without_the_flag_the_capture_lives_under_xdg_data() {
+        let (c, _) = split_args(&v(&["report"]));
+        assert!(c.ends_with("airspace/observations.jsonl"));
+    }
 }
