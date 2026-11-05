@@ -14,7 +14,6 @@ pub fn render(a: &Analysis) -> String {
     let mut h = String::new();
     let _ = write!(h, "{}", HEAD);
 
-    let mins = (a.duration() as f32 / 60.0).max(0.1);
     let est = a.estimated_devices();
 
     // The headline is a sentence, not a number, because the number on its own
@@ -23,14 +22,14 @@ pub fn render(a: &Analysis) -> String {
         h,
         r#"<header>
 <h1>Within airspace</h1>
-<p class="lede">In {:.0} minutes of listening — no monitor mode, no root, no
+<p class="lede">In {} of listening — no monitor mode, no root, no
 transmitting — this machine overheard <strong>{}</strong> addresses belonging to
 roughly <strong>{}</strong> devices. {} of those addresses were permanent ones
 that will still identify the same object next year.</p>
 <p class="meta">{} sightings · {} · a passive read of the Bluetooth advertising
 channels any desktop session can already see</p>
 </header>"#,
-        mins,
+        listened_for(a.duration()),
         a.tracks.len(),
         est,
         a.public_addrs(),
@@ -45,6 +44,20 @@ channels any desktop session can already see</p>
 
     h.push_str("</main>\n");
     h
+}
+
+/// "40 seconds", "12 minutes", "2 hours 5 minutes". The old headline printed
+/// whole minutes and said "0 minutes of listening" for any short capture.
+fn listened_for(d: u64) -> String {
+    let plural = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
+    match d {
+        0..=90 => plural(d, "second"),
+        91..=5400 => plural(d / 60, "minute"),
+        _ => {
+            let (h, m) = (d / 3600, (d % 3600) / 60);
+            if m == 0 { plural(h, "hour") } else { format!("{} {}", plural(h, "hour"), plural(m, "minute")) }
+        }
+    }
 }
 
 fn window_text(a: &Analysis) -> String {
@@ -190,10 +203,11 @@ fn limits(a: &Analysis) -> String {
     format!(
         r#"<section class="limits"><h2>How good is this data, honestly</h2>
 <dl>
-<dt>It is Bluetooth only.</dt><dd>Wi-Fi probe requests are the richer source — a
-phone that is not connected to anything asks after networks it has joined
-before, which is a list of places its owner has been. Reading those needs the
-radio in monitor mode, which most laptop Wi-Fi chips refuse to do.</dd>
+<dt>This capture is Bluetooth only.</dt><dd><code>airspace wifi</code> adds a Wi-Fi ear to the
+live map, but it needs a monitor interface and CAP_NET_RAW, and it never writes
+to this file. The old claim that every phone broadcasts the networks it has
+joined is mostly out of date: modern phones send wildcard probes with no name
+in them. Older devices, laptops and IoT things still do.</dd>
 
 <dt>Distance is a guess, not a measurement.</dt><dd>Signal strength converted with a
 path-loss model. A body standing between you and a device costs about 10 dB,
@@ -295,3 +309,24 @@ footer{max-width:860px;margin:0 auto;padding:40px 24px 80px;color:var(--dim);fon
 </style>
 <main>
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn says_how_long_it_listened_in_words() {
+        assert_eq!(listened_for(0), "0 seconds");
+        assert_eq!(listened_for(1), "1 second");
+        assert_eq!(listened_for(40), "40 seconds");
+        assert_eq!(listened_for(600), "10 minutes");
+        assert_eq!(listened_for(7200), "2 hours");
+        assert_eq!(listened_for(7500), "2 hours 5 minutes");
+    }
+
+    #[test]
+    fn escapes_what_devices_chose_to_call_themselves() {
+        // A broadcast name is attacker-controlled text that ends up in HTML.
+        assert_eq!(esc(r#"<img src=x onerror="a">&"#), "&lt;img src=x onerror=&quot;a&quot;&gt;&amp;");
+    }
+}
