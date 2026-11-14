@@ -4,8 +4,11 @@
 #
 # Install:
 #   sudo install -Dm644 contrib/airspace-wifi.service /etc/systemd/system/
-#   sudo setcap cap_net_raw+ep /home/philip/.local/bin/airspace
 #   sudo systemctl enable --now airspace-wifi
+#
+# No setcap: AmbientCapabilities below grants CAP_NET_RAW to this one process.
+# A file capability would hand it to every subcommand of the binary, from any
+# shell, for as long as the file exists.
 [Unit]
 Description=airspace — Wi-Fi ear on a monitor interface
 Documentation=https://github.com/one-more-refactor/airspace
@@ -34,8 +37,8 @@ ExecStart=/home/philip/.local/bin/airspace wifi mon0
 ExecStopPost=+/bin/sh -c '/usr/bin/iw dev mon0 del || true'
 
 AmbientCapabilities=CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
-NoNewPrivileges=false
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=true
 Restart=on-failure
 RestartSec=5
 

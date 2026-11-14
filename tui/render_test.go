@@ -23,9 +23,9 @@ func sample() Snapshot {
 		Room:  Room{Width: 10, Height: 8},
 		Nodes: []Node{{Name: "carl", X: 5, Y: 4}, {Name: "ear1", X: 1, Y: 7}},
 		Devices: []Device{
-			{ID: "EC:00:00:00:00:01", Label: "philip's phone", Known: true,
+			{ID: "AA:BB:CC:DD:EE:01", Label: "philip's phone", Known: true,
 				Heard: []Heard{{Node: "carl", RSSI: -58, Metres: 3.2, Basis: "advertised", HeardRatio: 1}}},
-			{ID: "1C:00:00:00:00:02", Label: "airpods", Known: true,
+			{ID: "AA:BB:CC:DD:EE:02", Label: "airpods", Known: true,
 				Heard: []Heard{{Node: "carl", RSSI: -70, Metres: 9, Basis: "assumed", HeardRatio: 0.2}}},
 		},
 	}

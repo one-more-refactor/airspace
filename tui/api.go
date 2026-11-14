@@ -77,7 +77,42 @@ func (c *client) state() (*Snapshot, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
 		return nil, err
 	}
+	s.clean()
 	return &s, nil
+}
+
+// clean makes every string in the snapshot safe to print.
+//
+// Device labels, node names and the rest are chosen by whoever transmits them,
+// and lipgloss passes escape sequences straight through to the terminal. A
+// name carrying ESC ]52 writes your clipboard; one carrying ESC [2J wipes the
+// screen. The collector cleans these too, but the console can be pointed at
+// any collector, so it does not take that on trust.
+func (s *Snapshot) clean() {
+	for i := range s.Nodes {
+		s.Nodes[i].Name = printable(s.Nodes[i].Name)
+	}
+	for i := range s.Devices {
+		d := &s.Devices[i]
+		d.ID = printable(d.ID)
+		d.Label = printable(d.Label)
+		d.AddrType = printable(d.AddrType)
+		if d.Vendor != nil {
+			v := printable(*d.Vendor)
+			d.Vendor = &v
+		}
+		if d.Unreliable != nil {
+			// Prose, not a label: keep it whole, only strip what is unsafe.
+			u := strip(*d.Unreliable)
+			d.Unreliable = &u
+		}
+		for j := range d.Doing {
+			d.Doing[j] = strip(d.Doing[j])
+		}
+		for j := range d.Heard {
+			d.Heard[j].Node = printable(d.Heard[j].Node)
+		}
+	}
 }
 
 type fitResult struct {
@@ -177,8 +212,8 @@ func saveCalibration(c calibration) error {
 	b.WriteString("# falls back to advertised transmit power, and then to textbook\n")
 	b.WriteString("# constants, and says on screen which it used.\n")
 	for _, e := range out {
-		fmt.Fprintf(&b, "\n[[calibration]]\nnode = %q\ndevice = %q\nrssi_at_1m = %.2f\nexponent = %.3f\nsamples = %d\n",
-			e.Node, e.Device, e.RSSIAt1m, e.Exponent, e.Samples)
+		fmt.Fprintf(&b, "\n[[calibration]]\nnode = %s\ndevice = %s\nrssi_at_1m = %.2f\nexponent = %.3f\nsamples = %d\n",
+			tomlString(e.Node), tomlString(e.Device), e.RSSIAt1m, e.Exponent, e.Samples)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -199,7 +234,7 @@ func savePlacement(nodes []Node) error {
 	b.WriteString("# reports about itself, which is what makes it possible to place\n")
 	b.WriteString("# a board on a shelf without editing a file on it.\n")
 	for _, n := range nodes {
-		fmt.Fprintf(&b, "\n[[placement]]\nname = %q\nx = %.2f\ny = %.2f\n", n.Name, n.X, n.Y)
+		fmt.Fprintf(&b, "\n[[placement]]\nname = %s\nx = %.2f\ny = %.2f\n", tomlString(n.Name), n.X, n.Y)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

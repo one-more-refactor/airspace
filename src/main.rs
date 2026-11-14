@@ -291,11 +291,7 @@ async fn watch(capture: &PathBuf, secs: Option<u64>) -> Result<()> {
     let listener = observe::Listener::new().await?;
     listener.start().await?;
 
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(capture)
-        .await?;
+    let mut file = tokio::fs::File::from_std(open_private(capture, true)?);
 
     match secs {
         Some(s) => eprintln!("Listening for {s}s → {}", capture.display()),
@@ -354,7 +350,10 @@ fn render(capture: &PathBuf, out: &PathBuf) -> Result<()> {
         anyhow::bail!("{} has no usable observations", capture.display());
     }
     let a = analyse::analyse(&obs);
-    std::fs::write(out, report::render(&a))?;
+    {
+        use std::io::Write;
+        open_private(out, false)?.write_all(report::render(&a).as_bytes())?;
+    }
     println!(
         "{} addresses, ~{} devices, {} sightings → {}",
         a.tracks.len(),
@@ -420,4 +419,43 @@ async fn doctor() -> Result<()> {
          no, a USB adapter on mt7921au / mt7612u is the usual fix."
     );
     Ok(())
+}
+
+/// Open a capture or report for writing, readable by its owner only.
+///
+/// Both hold every address heard nearby, with timestamps — a log of who was
+/// around and when. An existing file is tightened too, not just new ones.
+fn open_private(path: &std::path::Path, append: bool) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(append)
+        .truncate(!append)
+        .mode(0o600)
+        .open(path)?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(f)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn captures_and_reports_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("airspace-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("capture.jsonl");
+        // Even a file that already existed world-readable.
+        std::fs::write(&p, b"").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(open_private(&p, true).unwrap());
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        let r = dir.join("report.html");
+        drop(open_private(&r, false).unwrap());
+        assert_eq!(std::fs::metadata(&r).unwrap().permissions().mode() & 0o777, 0o600);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

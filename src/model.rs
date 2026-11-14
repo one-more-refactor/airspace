@@ -69,6 +69,34 @@ pub struct Observation {
     pub in_ear: Option<bool>,
 }
 
+/// A device- or node-supplied string, made safe to show.
+///
+/// Advertised names, SSIDs and node names are chosen by whoever transmits
+/// them. BlueZ only checks that a name is valid UTF-8, and ESC is valid UTF-8,
+/// so an unfiltered name is a terminal escape sequence waiting for a console
+/// to print it. Control characters go, and so do the invisible format
+/// characters (bidi overrides, zero-width marks) that make a name look like
+/// something it is not (`Home`, U+202E, `txt.exe`). Clamped, because no label
+/// needs to be an essay.
+pub fn printable(s: &str) -> String {
+    s.chars()
+        .filter(|&c| !c.is_control() && !is_invisible_format(c))
+        .take(MAX_LABEL)
+        .collect()
+}
+
+/// Longer than a legacy advertising name (29 bytes) or an SSID (32 bytes).
+pub const MAX_LABEL: usize = 64;
+
+fn is_invisible_format(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{180E}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{2028}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}'
+        | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
 /// Apple's proximity-pairing advertisement, read for one bit.
 ///
 /// Byte 5 is a status byte whose bits 1 and 3 are the two in-ear flags — which
@@ -374,6 +402,16 @@ pub fn band(rssi: i16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn printable_strips_escapes_and_invisible_characters() {
+        assert_eq!(printable("phone\x1b]52;c;Y3VybA==\x07"), "phone]52;c;Y3VybA==");
+        assert_eq!(printable("CARL\x1b[2J"), "CARL[2J");
+        assert_eq!(printable("Home\u{202E}txt.exe\u{200B}"), "Hometxt.exe");
+        assert_eq!(printable("a\u{2066}b\u{2069}c\u{FEFF}"), "abc");
+        assert_eq!(printable("Philip’s AirPods Pro"), "Philip’s AirPods Pro");
+        assert_eq!(printable(&"x".repeat(300)).chars().count(), MAX_LABEL);
+    }
 
     #[test]
     fn the_two_distance_models_agree_at_the_reference_point() {

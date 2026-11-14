@@ -79,7 +79,7 @@ impl Track {
     fn fingerprint(&self) -> String {
         let c: Vec<String> = self.company.iter().map(|x| format!("{x:04x}")).collect();
         let m: Vec<String> = self.cmsg.iter().map(|(c, x)| format!("{c:04x}:{x:02x}")).collect();
-        let s: Vec<String> = self.service.iter().map(|x| x[4..8].to_lowercase()).collect();
+        let s: Vec<String> = self.service.iter().map(|x| x.get(4..8).unwrap_or("").to_ascii_lowercase()).collect();
         format!("{}|{}|{}", c.join(","), m.join(","), s.join(","))
     }
 }
@@ -269,6 +269,16 @@ mod tests {
             doing: None,
             in_ear: None,
         }
+    }
+
+    #[test]
+    fn a_short_or_odd_service_uuid_does_not_panic() {
+        // A crafted capture, not anything BlueZ would produce.
+        let mut a = obs(100, "AA:BB", "random", -60, vec![0x004C]);
+        a.service = vec!["ab".into()];
+        let mut b = obs(101, "CC:DD", "random", -60, vec![0x004C]);
+        b.service = vec!["000é0ab-xx".into()];
+        let _ = analyse(&[a, b]);
     }
 
     #[test]

@@ -114,10 +114,12 @@ impl Listener {
                     .unwrap_or("unknown")
                     .to_string(),
                 rssi: get("RSSI").and_then(|v| i16::try_from(v.clone()).ok()),
+                // Whoever transmits chooses this, and BlueZ only checks it is
+                // UTF-8 — which ESC is. See `model::printable`.
                 name: get("Name")
                     .and_then(|v| <&str>::try_from(v).ok())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string),
+                    .map(crate::model::printable)
+                    .filter(|s| !s.is_empty()),
                 company,
                 cmsg,
                 service,

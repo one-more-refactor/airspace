@@ -34,3 +34,21 @@ url = ""
 # anyone on the network draw imaginary people into your room, which is a worse
 # failure than not having the feature.
 token = ""
+# Hostnames the map may be opened by, beyond IP addresses, localhost and this
+# machine's own hostname. Anything else gets a 421, which is what stops a web
+# page from DNS-rebinding its way to /api/state.
+# hosts = ["carl.example-tailnet.ts.net"]
+
+# Devices you own and hold the key for. Repeat the block per device. The IRK is
+# a serious secret — keep this file 0600 and never paste a real one anywhere
+# public. Values below are placeholders.
+#
+# [[identity]]
+# name = "phone"
+# irk = "<32 hex characters from the bond file's [IdentityResolvingKey]>"
+# address = "AA:BB:CC:DD:EE:FF"   # fixed identity address, as BlueZ shows it
+# address_type = "public"          # or "random" for a random static address
+#
+# Presence from broadcasts is unauthenticated: anyone in radio range can
+# replay or imitate an advertisement. Use it as a hint, never to unlock or
+# disarm anything.

@@ -178,8 +178,9 @@ Getting to three is the whole design of the tool. Any machine with a Bluetooth
 adapter can be an ear:
 
 ```
-# on the collector
-$ airspace serve 0.0.0.0:9970
+# on the collector, bound to the address the ears will use (not 0.0.0.0:
+# the map and /api/state are unauthenticated)
+$ airspace serve 100.64.0.10:9970
 
 # on each other machine, with its position in ~/.config/airspace/config.toml
 $ airspace feed http://collector:9970/ingest
@@ -189,6 +190,15 @@ Ingest is token-authenticated and plain HTTP — meant for a LAN or a tailnet, n
 the open internet. An unauthenticated ingest endpoint lets anyone on the network
 draw imaginary people into your room, so it refuses to run without a token
 rather than degrading quietly.
+
+The page and `/api/*` answer only to IP addresses, `localhost`, the machine's
+hostname and names listed under `[collector] hosts`, which keeps a web page from
+DNS-rebinding its way to the map.
+
+Presence from broadcasts is **unauthenticated**. Anyone in radio range can
+replay or imitate an advertisement, so treat "your phone is here" as a hint.
+Someone near the desk can keep you looking present, so it must never gate
+unlocking or disarming anything.
 
 ## The argument
 
@@ -221,11 +231,14 @@ device associated to an access point announces itself constantly, including
 laptops, televisions and consoles with no Bluetooth presence at all.
 
 ```
-sudo setcap cap_net_raw+ep ~/.local/bin/airspace
-sudo iw phy phy0 interface add mon0 type monitor
-sudo ip link set mon0 up && sudo iw dev mon0 set channel 6
-airspace wifi mon0
+sudo install -Dm644 contrib/airspace-wifi.service /etc/systemd/system/
+sudo systemctl enable --now airspace-wifi
 ```
+
+The unit makes the monitor interface and hands `CAP_NET_RAW` to that one
+process through `AmbientCapabilities`. Do not `setcap` the binary instead: a
+file capability applies to every subcommand — `serve`, `feed`, `report` — run
+from any shell.
 
 It feeds the same collector as everything else, so Wi-Fi devices appear on the
 same map with the same distance rings.

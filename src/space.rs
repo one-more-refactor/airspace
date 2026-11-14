@@ -96,6 +96,10 @@ pub struct Collector {
     /// Shared secret. An open ingest endpoint lets anyone draw imaginary
     /// people into your room, which is a worse failure than not having one.
     pub token: String,
+    /// Extra hostnames the page may be reached by — a tailnet name, say.
+    /// IP addresses, `localhost` and this machine's hostname always work;
+    /// anything else is refused, which is what stops DNS rebinding.
+    pub hosts: Vec<String>,
 }
 
 impl Default for Room {
@@ -114,7 +118,7 @@ impl Default for Node {
 }
 impl Default for Collector {
     fn default() -> Self {
-        Collector { url: String::new(), token: String::new() }
+        Collector { url: String::new(), token: String::new(), hosts: Vec::new() }
     }
 }
 impl Default for Config {
@@ -185,7 +189,17 @@ impl Config {
                 #[serde(default, rename = "calibration")]
                 calibrations: Vec<crate::model::Calibration>,
             }
-            let c: Cals = toml::from_str(&s)?;
+            // A bad file is a warning, not a refusal to start: one odd node
+            // name must not take the collector down on every restart.
+            let c: Cals = match toml::from_str(&s) {
+                Ok(c) => c,
+                // The parse error quotes the offending line, and that line
+                // can hold a feeder-chosen name: say where, not what.
+                Err(_) => {
+                    eprintln!("ignoring {}: not valid TOML", Self::calibration_path().display());
+                    Cals { calibrations: Vec::new() }
+                }
+            };
             // Measured beats configured: a later entry for the same pair wins,
             // so recalibrating is just writing the file again.
             for cal in c.calibrations {
@@ -197,7 +211,7 @@ impl Config {
     }
 }
 
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     std::fs::read_to_string("/etc/hostname")
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "here".into())
@@ -271,6 +285,77 @@ struct Inner {
     seen_in: HashMap<(String, String), VecDeque<u64>>,
     /// When each address was last reported as being in an ear.
     worn_at: HashMap<String, u64>,
+    /// When stale entries were last swept out.
+    pruned: u64,
+}
+
+/// Hard ceilings on what the collector will remember. Without them a flood of
+/// random source addresses — trivial over Wi-Fi, slower over BLE — grows the
+/// process by a kilobyte an address until it is killed, and every snapshot
+/// walks all of it under the lock.
+const MAX_DEVICES: usize = 4096;
+const MAX_NODES: usize = 32;
+
+/// How often stale entries are swept, in seconds.
+const PRUNE_EVERY: u64 = 10;
+
+/// Clean every string a feeder supplied. See `model::printable`.
+fn sanitised(o: &Observation, now: u64) -> Observation {
+    let p = crate::model::printable;
+    Observation {
+        // A feeder's clock is not ours. A timestamp in the future would keep
+        // a device "present" for as long as it stays in the future, so it is
+        // clamped to now; one in the past simply ages out as it should.
+        t: o.t.min(now),
+        addr: p(&o.addr),
+        at: p(&o.at),
+        name: o.name.as_deref().map(p).filter(|s| !s.is_empty()),
+        service: o.service.iter().map(|s| p(s)).collect(),
+        icon: o.icon.as_deref().map(p),
+        modalias: o.modalias.as_deref().map(p),
+        src: p(&o.src),
+        doing: o.doing.as_deref().map(p),
+        ..o.clone()
+    }
+}
+
+impl Inner {
+    /// Forget everything that can no longer appear in a snapshot.
+    fn prune(&mut self, now: u64, worn_memory: u64) {
+        let fresh = |t: u64| now.saturating_sub(t) <= STALE;
+        self.heard.retain(|_, per_node| {
+            per_node.retain(|_, (_, t)| fresh(*t));
+            !per_node.is_empty()
+        });
+        let heard = &self.heard;
+        self.meta.retain(|a, _| heard.contains_key(a));
+        self.first.retain(|a, _| heard.contains_key(a));
+        self.seen_in.retain(|_, v| {
+            while v.front().is_some_and(|t| now.saturating_sub(*t) > RATIO_WINDOW) {
+                v.pop_front();
+            }
+            !v.is_empty()
+        });
+        self.worn_at.retain(|_, t| now.saturating_sub(*t) < worn_memory);
+        self.pruned = now;
+    }
+
+    /// Make room for one more address by dropping the one heard least recently.
+    fn evict_oldest(&mut self) {
+        let oldest = self
+            .heard
+            .iter()
+            .map(|(a, per_node)| (a, per_node.values().map(|(_, t)| *t).max().unwrap_or(0)))
+            .min_by_key(|(_, t)| *t)
+            .map(|(a, _)| a.clone());
+        if let Some(a) = oldest {
+            self.heard.remove(&a);
+            self.meta.remove(&a);
+            self.first.remove(&a);
+            self.worn_at.remove(&a);
+            self.seen_in.retain(|(x, _), _| x != &a);
+        }
+    }
 }
 
 /// The window over which the heard ratio is computed. Long enough that a
@@ -297,8 +382,19 @@ impl State {
 
     pub fn ingest(&self, node: &Node, obs: &[Observation]) {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let node = &Node { name: crate::model::printable(&node.name), ..node.clone() };
         let mut i = self.inner.lock().unwrap();
+        // A new node past the ceiling is refused outright; only a token holder
+        // can name nodes, but a leaked token should not be able to grow this
+        // without bound either.
+        if !i.nodes.contains_key(&node.name) && i.nodes.len() >= MAX_NODES {
+            return;
+        }
         i.nodes.insert(node.name.clone(), node.clone());
+        if now.saturating_sub(i.pruned) >= PRUNE_EVERY {
+            let worn = self.config.general.worn_memory_secs.max(STALE);
+            i.prune(now, worn);
+        }
 
         // One sweep from this node, whatever it contained. Recorded before the
         // observations so that a node reporting nothing still counts as having
@@ -311,14 +407,16 @@ impl State {
         }
 
         for o in obs {
+            let o = &sanitised(o, now);
             // Drop a stranger here, before it reaches state, the page or the
             // disk. Filtering later would still mean having written it down.
             if self.config.general.track_only_known
                 && !self.config.identities.is_empty()
-                && crate::identity::whose(&self.config.identities, &o.addr).is_none()
+                && crate::identity::whose(&self.config.identities, &o.addr, &o.at).is_none()
             {
                 continue;
             }
+
             let key = (o.addr.clone(), node.name.clone());
             let seen = i.seen_in.entry(key).or_default();
             seen.push_back(now);
@@ -329,6 +427,13 @@ impl State {
                 i.worn_at.insert(o.addr.clone(), now);
             }
             let Some(rssi) = o.rssi else { continue };
+            // Already too old to be drawn: holding it would only cost memory.
+            if now.saturating_sub(o.t) > STALE {
+                continue;
+            }
+            if !i.heard.contains_key(&o.addr) && i.heard.len() >= MAX_DEVICES {
+                i.evict_oldest();
+            }
             i.heard
                 .entry(o.addr.clone())
                 .or_default()
@@ -369,7 +474,7 @@ impl State {
                 .filter(|(_, (_, t))| now.saturating_sub(*t) <= STALE)
                 .map(|(n, (r, t))| {
                     let m = i.meta.get(addr);
-                    let who = crate::identity::whose(&self.config.identities, addr);
+                    let who = m.and_then(|o| crate::identity::whose(&self.config.identities, addr, &o.at));
                     // A model fitted in this room for this pair beats one
                     // derived from an advertised power, which beats a textbook
                     // constant. Take the best available and say which it was.
@@ -467,7 +572,7 @@ impl State {
             // A device we hold the key for is not "unnamed Apple device" — it
             // is a thing with a name, however many times it has changed its
             // address since we last looked.
-            let known = crate::identity::whose(&self.config.identities, addr);
+            let known = crate::identity::whose(&self.config.identities, addr, &o.at);
 
             // Worn state, with a memory: a bud taken out for a conversation
             // should not make the device disappear from the map.
@@ -587,6 +692,103 @@ mod tests {
         let snap = s.snapshot();
         assert!(snap.can_locate);
         assert_eq!(snap.devices[0].heard.len(), 3);
+    }
+
+    fn known(addr: &str) -> crate::identity::Identity {
+        crate::identity::Identity {
+            name: "phone".into(),
+            address: addr.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_fixed_identity_is_not_claimed_by_a_random_address() {
+        let mut cfg = Config::default();
+        cfg.identities = vec![known("F0:11:22:33:44:55")];
+        let s = State::new(cfg);
+        // Same six bytes, advertised as random static: dropped as a stranger.
+        s.ingest(&Node::default(), &[obs("F0:11:22:33:44:55", -50, now())]);
+        assert!(s.snapshot().devices.is_empty());
+        // The real thing arrives as public and is recognised.
+        let mut o = obs("F0:11:22:33:44:55", -50, now());
+        o.at = "public".into();
+        s.ingest(&Node::default(), &[o]);
+        let snap = s.snapshot();
+        assert_eq!(snap.devices.len(), 1);
+        assert!(snap.devices[0].known);
+    }
+
+    #[test]
+    fn a_feeder_cannot_stamp_observations_in_the_future() {
+        let s = State::new(Config::default());
+        s.ingest(&Node::default(), &[obs("AA", -60, now() + 100_000)]);
+        let i = s.inner.lock().unwrap();
+        let (_, t) = i.heard["AA"].values().next().copied().unwrap();
+        assert!(t <= now(), "a future timestamp would keep the device present forever");
+        assert!(i.first["AA"] <= now());
+    }
+
+    #[test]
+    fn feeder_strings_are_cleaned_before_they_reach_state() {
+        let s = State::new(Config::default());
+        let mut o = obs("AA", -60, now());
+        o.name = Some("\x1b]52;c;eA==\x07phone".into());
+        o.doing = Some("x\x1b[2J".into());
+        s.ingest(&Node { name: "CARL\x1b[2J\u{202E}".into(), x: 1.0, y: 1.0 }, &[o]);
+        let snap = s.snapshot();
+        assert_eq!(snap.devices[0].label, "]52;c;eA==phone");
+        assert!(snap.devices[0].doing.iter().all(|d| !d.contains('\x1b')));
+        assert!(snap.nodes.iter().any(|n| n.name == "CARL[2J"));
+        assert!(snap.nodes.iter().all(|n| !n.name.contains('\x1b')));
+    }
+
+    #[test]
+    fn an_address_flood_is_bounded() {
+        let s = State::new(Config::default());
+        let node = Node { name: "n".into(), x: 0.0, y: 0.0 };
+        let t = now();
+        let batch: Vec<Observation> = (0..(MAX_DEVICES as u32 + 500))
+            .map(|n| obs(&format!("02:00:00:{:02X}:{:02X}:{:02X}", n >> 16, (n >> 8) & 0xff, n & 0xff), -60, t))
+            .collect();
+        s.ingest(&node, &batch);
+        assert!(s.inner.lock().unwrap().heard.len() <= MAX_DEVICES);
+        assert!(s.inner.lock().unwrap().meta.len() <= MAX_DEVICES);
+
+        // Stale-on-arrival observations are never stored at all.
+        let old: Vec<Observation> =
+            (0..1000u32).map(|n| obs(&format!("old{n}"), -60, t - 3600)).collect();
+        s.ingest(&node, &old);
+        assert!(!s.inner.lock().unwrap().heard.contains_key("old1"));
+    }
+
+    #[test]
+    fn devices_that_left_are_forgotten_not_just_hidden() {
+        let s = State::new(Config::default());
+        let node = Node { name: "n".into(), x: 0.0, y: 0.0 };
+        s.ingest(&node, &[obs("AA", -60, now())]);
+        {
+            let mut i = s.inner.lock().unwrap();
+            // Pretend AA was last heard long ago and the last sweep was too.
+            for v in i.heard.get_mut("AA").unwrap().values_mut() {
+                v.1 = now() - 3600;
+            }
+            i.pruned = 0;
+        }
+        s.ingest(&node, &[]);
+        let i = s.inner.lock().unwrap();
+        assert!(i.heard.is_empty());
+        assert!(i.meta.is_empty());
+        assert!(i.first.is_empty());
+    }
+
+    #[test]
+    fn node_count_is_capped() {
+        let s = State::new(Config::default());
+        for n in 0..(MAX_NODES + 10) {
+            s.ingest(&Node { name: format!("node{n}"), x: 0.0, y: 0.0 }, &[]);
+        }
+        assert!(s.snapshot().nodes.len() <= MAX_NODES);
     }
 
     #[test]

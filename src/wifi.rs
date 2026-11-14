@@ -256,11 +256,7 @@ fn information_element(f: &[u8], mut off: usize, want: u8) -> Option<String> {
             // Names are arbitrary bytes. Anything unprintable is either a
             // different encoding or a device trying to be clever, and neither
             // belongs in a page rendered as HTML.
-            let s: String = String::from_utf8_lossy(raw)
-                .chars()
-                .filter(|c| !c.is_control())
-                .collect();
-            return Some(s);
+            return Some(crate::model::printable(&String::from_utf8_lossy(raw)));
         }
         off = start + len;
     }
@@ -368,6 +364,17 @@ mod tests {
     }
 
     #[test]
+    fn an_ssid_cannot_carry_escapes_or_bidi_tricks() {
+        // "Home", ESC [2J, RLO "txt.exe", zero-width space.
+        let mut ssid = b"Home\x1b[2J".to_vec();
+        ssid.extend_from_slice("\u{202E}txt.exe\u{200B}".as_bytes());
+        let mut tail = vec![0u8, ssid.len() as u8];
+        tail.extend_from_slice(&ssid);
+        let f = parse(&frame_with(0x40, [0x1e; 6], &tail)).expect("parses");
+        assert_eq!(f.ssid.as_deref(), Some("Home[2Jtxt.exe"));
+    }
+
+    #[test]
     fn a_wildcard_probe_is_not_a_network_called_nothing() {
         // IE 0, length 0 — the modern default, and the reason the "phones
         // broadcast their history" claim is mostly out of date.
@@ -379,7 +386,7 @@ mod tests {
 
     #[test]
     fn tells_a_randomised_address_from_a_burned_in_one() {
-        // 1e:… — locally administered, seen on this desk.
+        // 1e:… — locally administered, the shape a randomised MAC takes.
         assert!(is_randomised(&[0x1e, 0x00, 0x00, 0x00, 0x00, 0x01]));
         // 00:09:52:… — a real OUI, which resolves to a manufacturer.
         assert!(!is_randomised(&[0x00, 0x09, 0x52, 0x00, 0x00, 0x01]));

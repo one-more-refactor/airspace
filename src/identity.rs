@@ -54,11 +54,24 @@ pub struct Identity {
     /// So: `address` labels it on the machine you paired with, `irk` labels it
     /// everywhere else, and a device you care about wants both.
     pub address: String,
+    /// The BlueZ `AddressType` that `address` must arrive with: "public" (the
+    /// default, and what phones and earbuds use as an identity address) or
+    /// "random" for a device whose identity address is random static.
+    ///
+    /// The string alone is not enough. Any six bytes with the top two bits set
+    /// are a valid random static address, so without this anything that can
+    /// advertise can claim to be your phone without cloning a single thing.
+    pub address_type: String,
 }
 
 impl Default for Identity {
     fn default() -> Self {
-        Identity { name: String::new(), irk: String::new(), address: String::new() }
+        Identity {
+            name: String::new(),
+            irk: String::new(),
+            address: String::new(),
+            address_type: "public".into(),
+        }
     }
 }
 
@@ -130,9 +143,15 @@ pub fn parse_addr(s: &str) -> Option<[u8; 6]> {
 }
 
 /// Which identity, if any, does this address belong to?
-pub fn whose(identities: &[Identity], addr: &str) -> Option<String> {
+///
+/// `at` is the address type it arrived with ("public" or "random"). A fixed
+/// address only matches when the type matches too.
+pub fn whose(identities: &[Identity], addr: &str, at: &str) -> Option<String> {
     for id in identities {
-        if !id.address.is_empty() && id.address.eq_ignore_ascii_case(addr) {
+        if !id.address.is_empty()
+            && id.address.eq_ignore_ascii_case(addr)
+            && id.address_type.eq_ignore_ascii_case(at)
+        {
             return Some(id.name.clone());
         }
     }
@@ -183,7 +202,7 @@ mod tests {
         let irk = parse_hex16("ec0234a357c8ad05341010a60a397d9b").unwrap();
         // Public address — top bits 0b00. Testing it would be meaningless and
         // occasionally produce a false positive.
-        assert!(!resolves(&irk, &[0x1c, 0x00, 0x00, 0x00, 0x00, 0x02]));
+        assert!(!resolves(&irk, &[0x1c, 0x22, 0x33, 0x44, 0x55, 0x66]));
         // Static random — top bits 0b11.
         assert!(!resolves(&irk, &[0xd0, 0x00, 0x00, 0x00, 0x00, 0x00]));
     }
@@ -194,12 +213,31 @@ mod tests {
         // arrives is the permanent address and there is no key work to do.
         let ids = vec![Identity {
             name: "phone".into(),
-            irk: String::new(),
-            address: "EC:00:00:00:00:01".into(),
+            address: "F0:11:22:33:44:55".into(),
+            ..Identity::default()
         }];
-        assert_eq!(whose(&ids, "EC:00:00:00:00:01").as_deref(), Some("phone"));
-        assert_eq!(whose(&ids, "EC:00:00:00:00:01").as_deref(), Some("phone"));
-        assert_eq!(whose(&ids, "11:22:33:44:55:66"), None);
+        assert_eq!(whose(&ids, "F0:11:22:33:44:55", "public").as_deref(), Some("phone"));
+        assert_eq!(whose(&ids, "f0:11:22:33:44:55", "public").as_deref(), Some("phone"));
+        assert_eq!(whose(&ids, "11:22:33:44:55:66", "public"), None);
+    }
+
+    #[test]
+    fn a_fixed_address_needs_the_right_address_type() {
+        // F0:… has the top bits 0b11, so it is also a valid random static
+        // address — anything that can advertise can use it. Arriving as
+        // "random" when the identity is public is someone else.
+        let ids = vec![Identity {
+            name: "phone".into(),
+            address: "F0:11:22:33:44:55".into(),
+            ..Identity::default()
+        }];
+        assert_eq!(whose(&ids, "F0:11:22:33:44:55", "random"), None);
+        assert_eq!(whose(&ids, "F0:11:22:33:44:55", ""), None);
+
+        // And a device configured as random static matches only as random.
+        let ids = vec![Identity { address_type: "random".into(), ..ids[0].clone() }];
+        assert_eq!(whose(&ids, "F0:11:22:33:44:55", "random").as_deref(), Some("phone"));
+        assert_eq!(whose(&ids, "F0:11:22:33:44:55", "public"), None);
     }
 
     #[test]
@@ -208,12 +246,12 @@ mod tests {
         // kind of hostile input.
         for s in [
             "", ":", "::::::", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ", "1:2:3:4:5:6",
-            "EC:00:00:00:00:01:00", "-1:00:00:00:00:00",
+            "F0:11:22:33:44:55:00", "-1:00:00:00:00:00",
             &"f".repeat(1000), &"0".repeat(31), &"0".repeat(33),
         ] {
             let _ = parse_addr(s);
             let _ = parse_hex16(s);
-            let _ = whose(&[], s);
+            let _ = whose(&[], s, "public");
         }
         // A key of the wrong length must never be silently padded into a
         // working key — that would resolve nothing and look like bad hardware.
@@ -223,10 +261,11 @@ mod tests {
 
     #[test]
     fn parses_what_bluez_writes() {
-        // BlueZ writes the key as unbroken uppercase hex.
+        // BlueZ writes the key as unbroken uppercase hex. This is the D.7
+        // vector again: never put a real key in a test.
         assert!(parse_hex16("EC0234A357C8AD05341010A60A397D9B").is_some());
         assert!(parse_hex16("too short").is_none());
-        assert_eq!(parse_addr("EC:00:00:00:00:01").unwrap()[0], 0xEC);
+        assert_eq!(parse_addr("F0:11:22:33:44:55").unwrap()[0], 0xF0);
         assert!(parse_addr("nonsense").is_none());
     }
 }

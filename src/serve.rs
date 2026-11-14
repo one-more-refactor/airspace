@@ -13,6 +13,7 @@
 //! a distance; three receivers at known positions hear a place.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -49,14 +50,44 @@ pub async fn serve(state: State, bind: &str) -> Result<()> {
     }
 
     eprintln!("airspace: http://{bind}");
+    accept_loop(listener, state, MAX_CONNECTIONS, REQUEST_DEADLINE).await
+}
+
+/// How long one whole request may take — head, body and reply together.
+///
+/// Per-read deadlines alone are not enough: a client that sends one byte every
+/// nine seconds never trips a ten-second read timeout, and holds its task for
+/// as long as it likes.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Connections served at once. Past this the collector stops accepting and
+/// lets the kernel backlog hold the rest, rather than spawning a task and a
+/// buffer for every socket anyone cares to open.
+const MAX_CONNECTIONS: usize = 64;
+
+async fn accept_loop(
+    listener: TcpListener,
+    state: Arc<State>,
+    max: usize,
+    deadline: Duration,
+) -> Result<()> {
+    let permits = Arc::new(tokio::sync::Semaphore::new(max));
     loop {
-        let (sock, _) = match listener.accept().await {
-            Ok(x) => x,
-            Err(_) => continue,
+        let permit = permits.clone().acquire_owned().await?;
+        let sock = match listener.accept().await {
+            Ok((sock, _)) => sock,
+            // Out of file descriptors, most likely. Retrying at once is a hot
+            // loop that pegs a core while nothing gets served; back off.
+            Err(_) => {
+                drop(permit);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
         };
         let state = state.clone();
         tokio::spawn(async move {
-            let _ = handle(sock, state).await;
+            let _ = tokio::time::timeout(deadline, handle(sock, state)).await;
+            drop(permit);
         });
     }
 }
@@ -182,6 +213,17 @@ async fn handle(mut sock: TcpStream, state: Arc<State>) -> Result<()> {
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default().split('?').next().unwrap_or_default();
 
+    // DNS rebinding: a web page you visit can point its own hostname at
+    // 127.0.0.1 and read the map as if it were same-origin. The browser still
+    // sends the page's hostname, so anything that is not a name this machine
+    // answers to is refused. /ingest is exempt: it is token-checked, and the
+    // ears address the collector by whatever name their network gives it.
+    if path != "/ingest"
+        && !host_allowed(header(&head, "host").as_deref(), &state.config.collector.hosts)
+    {
+        return reply(&mut sock, "421 Misdirected Request", "text/plain", b"").await;
+    }
+
     match (method, path) {
         ("GET", "/") => reply(&mut sock, "200 OK", "text/html; charset=utf-8", UI.as_bytes()).await,
         ("GET", "/api/state") => {
@@ -291,6 +333,30 @@ async fn handle(mut sock: TcpStream, state: Arc<State>) -> Result<()> {
     }
 }
 
+/// Is this `Host` header one the page may legitimately be reached by?
+///
+/// An IP literal is always fine — rebinding needs a hostname to rebind. So is
+/// `localhost`, this machine's own hostname, and anything listed in
+/// `collector.hosts`.
+fn host_allowed(host: Option<&str>, extra: &[String]) -> bool {
+    let Some(h) = host.map(str::trim).filter(|h| !h.is_empty()) else { return false };
+    if let Some(rest) = h.strip_prefix('[') {
+        return rest
+            .split_once(']')
+            .is_some_and(|(v6, _)| v6.parse::<std::net::Ipv6Addr>().is_ok());
+    }
+    let name = h.rsplit_once(':').map_or(h, |(n, _)| n);
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    if name.parse::<std::net::Ipv4Addr>().is_ok() || name == "localhost" {
+        return true;
+    }
+    let me = crate::space::hostname().to_ascii_lowercase();
+    if !me.is_empty() && (name == me || name == format!("{me}.local")) {
+        return true;
+    }
+    extra.iter().any(|e| e.trim().trim_end_matches('.').eq_ignore_ascii_case(&name))
+}
+
 fn header(head: &str, name: &str) -> Option<String> {
     head.lines().skip(1).find_map(|l| {
         let (k, v) = l.split_once(':')?;
@@ -335,6 +401,88 @@ mod tests {
         );
         // A bare host gets the default port and the default path.
         assert_eq!(split_url("carl").unwrap(), ("carl:9970".into(), "/ingest".into()));
+    }
+
+    #[test]
+    fn only_names_this_machine_answers_to_are_served() {
+        let extra = vec!["airspace.example.net".to_string()];
+        for ok in ["127.0.0.1:9970", "localhost:9970", "LOCALHOST", "192.168.1.5",
+                   "[::1]:9970", "airspace.example.net:9970", "airspace.example.net."] {
+            assert!(host_allowed(Some(ok), &extra), "{ok} should be allowed");
+        }
+        for bad in ["attacker.example", "attacker.example:9970", "127.0.0.1.attacker.example",
+                    "localhost.attacker.example", "[evil]:9970", ""] {
+            assert!(!host_allowed(Some(bad), &extra), "{bad} should be refused");
+        }
+        assert!(!host_allowed(None, &extra));
+    }
+
+    async fn start(max: usize, deadline: Duration) -> std::net::SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a = l.local_addr().unwrap();
+        let st = Arc::new(State::new(crate::space::Config::default()));
+        tokio::spawn(accept_loop(l, st, max, deadline));
+        a
+    }
+
+    async fn get(a: std::net::SocketAddr, host: &str, path: &str) -> String {
+        let mut s = TcpStream::connect(a).await.unwrap();
+        s.write_all(format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out).await;
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_rebound_hostname_gets_nothing() {
+        let a = start(8, Duration::from_secs(5)).await;
+        assert!(get(a, "attacker.example", "/api/state").await.starts_with("HTTP/1.1 421"));
+        assert!(get(a, "attacker.example", "/").await.starts_with("HTTP/1.1 421"));
+        let ok = get(a, &a.to_string(), "/api/state").await;
+        assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+        // /ingest is token-checked instead, whatever the Host says.
+        assert!(get(a, "attacker.example", "/ingest").await.starts_with("HTTP/1.1 404"));
+    }
+
+    #[tokio::test]
+    async fn a_trickled_request_is_cut_off_by_the_overall_deadline() {
+        let a = start(8, Duration::from_millis(800)).await;
+        let mut s = TcpStream::connect(a).await.unwrap();
+        let started = std::time::Instant::now();
+        s.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+        // One header byte every 200 ms: never slow enough for a per-read
+        // timeout, forever if nothing bounds the whole request.
+        let mut closed = false;
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if s.write_all(b"X").await.is_err() {
+                closed = true;
+                break;
+            }
+            let mut b = [0u8; 16];
+            if let Ok(Ok(0)) = tokio::time::timeout(Duration::from_millis(1), s.read(&mut b)).await {
+                closed = true;
+                break;
+            }
+        }
+        assert!(closed, "the connection was still open after 6 s");
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn connections_past_the_cap_wait_their_turn() {
+        let a = start(1, Duration::from_secs(10)).await;
+        // Hold the only slot with a connection that says nothing.
+        let hog = TcpStream::connect(a).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let waiting = tokio::spawn(get(a, "localhost", "/api/room"));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!waiting.is_finished(), "a second connection was served past the cap");
+        drop(hog);
+        let r = tokio::time::timeout(Duration::from_secs(3), waiting).await.unwrap().unwrap();
+        assert!(r.starts_with("HTTP/1.1 200"), "{r}");
     }
 
     #[test]
