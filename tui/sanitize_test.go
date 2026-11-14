@@ -45,7 +45,7 @@ func TestHostileNamesNeverReachTheTerminal(t *testing.T) {
 }
 
 func TestPrintableClampsAndKeepsOrdinaryText(t *testing.T) {
-	if got := printable("Philip’s AirPods Pro"); got != "Philip’s AirPods Pro" {
+	if got := printable("Kim’s AirPods Pro"); got != "Kim’s AirPods Pro" {
 		t.Errorf("ordinary text changed: %q", got)
 	}
 	if n := len([]rune(printable(strings.Repeat("é", 300)))); n != maxLabel {

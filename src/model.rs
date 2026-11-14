@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(printable("CARL\x1b[2J"), "CARL[2J");
         assert_eq!(printable("Home\u{202E}txt.exe\u{200B}"), "Hometxt.exe");
         assert_eq!(printable("a\u{2066}b\u{2069}c\u{FEFF}"), "abc");
-        assert_eq!(printable("Philip’s AirPods Pro"), "Philip’s AirPods Pro");
+        assert_eq!(printable("Kim’s AirPods Pro"), "Kim’s AirPods Pro");
         assert_eq!(printable(&"x".repeat(300)).chars().count(), MAX_LABEL);
     }
 
